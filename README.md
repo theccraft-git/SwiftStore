@@ -1,47 +1,91 @@
-# SideStore
+# SwiftStore 🚀
 
-> SideStore is an *untethered, community driven* alternative app store for non-jailbroken iOS devices 
+> **The All-In-One iOS & iPadOS Creation Studio and Sideloading Hub**
 
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://makeapullrequest.com)
-[![Nightly SideStore build](https://github.com/SideStore/SideStore/actions/workflows/nightly.yml/badge.svg)](https://github.com/SideStore/SideStore/actions/workflows/nightly.yml)
-[![.github/workflows/beta.yml](https://github.com/SideStore/SideStore/actions/workflows/beta.yml/badge.svg)](https://github.com/SideStore/SideStore/actions/workflows/beta.yml)
-[![Discord](https://img.shields.io/discord/949183273383395328?label=Discord)](https://dis.sidestore.io)
+**SwiftStore** is a PC-free tool designed for iPad and iOS users. It bridges Apple’s **Swift Playgrounds** with GitHub Actions cloud compilation, allowing you to build, sign, and install your own custom applications—directly on your device, completely free, and without needing a Mac, Xcode, or a paid Apple Developer account.
 
-![Alt](https://repobeats.axiom.co/api/embed/3a329ce95955690b9a9366f8d5598626a847d96c.svg "Repobeats analytics image")
+Built with complete compatibility for **SideStore** core features, SwiftStore also serves as a full-featured sideloading manager and drop-in replacement for traditional iOS app installers.
 
-SideStore is an iOS application that allows you to sideload apps onto your iOS device with just your Apple ID. SideStore resigns apps with your personal development certificate, and then uses a [specially designed VPN](https://github.com/jkcoxson/em_proxy) in order to trick iOS into installing them. SideStore will periodically "refresh" your apps in the background, to keep their normal 7-day development period from expiring.
+---
 
-SideStore's goal is to provide an untethered sideloading experience. It's a community driven fork of [AltStore](https://github.com/rileytestut/AltStore), and has already implemented some of the community's most-requested features.
+## 🛠️ How It Works (The Pipeline)
 
-(Contributions are welcome! 🙂)
+```text
+[ Swift Playgrounds (.swiftpm) ]
+               │
+               ▼
+   [ SwiftStore iPad Hub ] ────► Authenticate (GitHub OAuth + Apple ID)
+               │
+               ▼
+     [ GitHub Actions ] ────────► Cloud macOS Runner (`xcodebuild`)
+               │
+               ▼
+   [ Direct .IPA Output ]
+               │
+               ▼
+[ Local On-Device Signing ] ───► App Installed on Home Screen!
+```
 
-## Requirements
-- Xcode 15
-- iOS 14+
-- Rustup (`brew install rustup`)
+1. **Develop:** Write code or design your game directly in Swift Playgrounds on iPad.
+2. **Export:** Pass your exported `.swiftpm` package directly into SwiftStore.
+3. **Cloud Build:** SwiftStore creates a private GitHub repository on your account and triggers a pre-configured GitHub Actions workflow.
+4. **Compile:** A macOS virtual machine in the cloud compiles your Swift project into a signed or unsigned `.ipa` package.
+5. **Install:** SwiftStore retrieves the output `.ipa`, signs it on-device using your Apple ID via local loopback networking, and installs it straight to your home screen.
 
-Why iOS 14? Targeting such a recent version of iOS allows us to accelerate development, especially since not many developers have older devices to test on. This is corrobated by the fact that SwiftUI support is much better, allowing us to transistion to a more modern UI codebase.
-## Project Overview
+---
 
-### SideStore
-SideStore is a just regular, sandboxed iOS application. The AltStore app target contains the vast majority of SideStore's functionality, including all the logic for downloading and updating apps through SideStore. SideStore makes heavy use of standard iOS frameworks and technologies most iOS developers are familiar with.
+## ✨ Core Features
 
-### EM Proxy
-[EM Proxy](https://github.com/jkcoxson/em_proxy) powers the defining feature of SideStore: untethered app installation. By leveraging a custom-built App Store app with additional entitlements ([LocalDevVPN](https://github.com/jkcoxson/LocalDevVPN)) to create the VPN tunnel for us, it allows SideStore to take advantage of [Jitterbug](https://github.com/osy/Jitterbug)'s loopback method without requiring a paid developer account.
+* 📱 **100% On-Device Creation:** Go from raw `.swiftpm` code to a running app on your home screen without touching a computer.
+* 🔄 **Built-in Sideloading Engine:** Full SideStore compatibility—manage on-device resigning, background refreshing, and local 7-day certificate management.
+* 📦 **External Repository Support:** Native support for standard AltStore/SideStore JSON source formats (`sources.json`) to browse community apps or install `.ipa` files from direct URLs.
+* ☁️ **Zero-Cost Infrastructure:** Leverages free GitHub private repos and GitHub Actions minutes to handle heavy compilation without draining local iPad resources.
+* 🎯 **Decentralized App Sharing:** Share your projects via standard GitHub repositories or source links without central server dependencies.
 
-### Minimuxer
-[Minimuxer](https://github.com/jkcoxson/minimuxer) is a lockdown muxer that can run inside iOS’s sandbox. It replicates Apple’s usbmuxd protocol on macOS to “discover” devices to interface with LocalDevVPN on-device.
+---
 
-### Roxas
-[Roxas](https://github.com/rileytestut/roxas) is Riley Testut's internal framework from AltStore used across many of their iOS projects, developed to simplify a variety of common tasks used in iOS development.
+## 🚀 Getting Started
 
-We're hoping to eventually eliminate our dependency on it, as it increases the amount of unnecessary Objective-C in the project.
+### Prerequisites
+* An iPad running **iPadOS 16.0** or later.
+* A free **GitHub Account** (for cloud build workflows).
+* A free **Apple ID** (used strictly for local on-device app provisioning).
 
-## Contributing/Compilation Instructions
+### Installation via SwiftInstaller
 
-Please see [CONTRIBUTING.md](./CONTRIBUTING.md)
+To install SwiftStore for the first time without a computer, use **SwiftInstaller**—our lightweight, single-purpose bootstrap tool:
 
-## Licensing
+1. Download the latest **SwiftInstaller** release.
+2. Follow the on-screen setup wizard to configure the initial local loopback pairing.
+3. SwiftInstaller will install **SwiftStore** onto your device.
+4. **Once installed, you can immediately delete SwiftInstaller!** SwiftStore manages all ongoing signing, refreshing, and builds internally.
 
-This project is licensed under the **AGPLv3 license**.
+---
+
+## ⚙️ Cloud Quotas & Usage Guidelines
+
+Because SwiftStore relies on GitHub Actions' free tier:
+* **Build Frequency:** Free GitHub accounts receive 2,000 Action minutes per month. Since macOS runners use a 10x multiplier, you can typically run **15 to 20 full app builds per month** for free.
+* **Build Duration:** Cloud compilation typically takes between 2 to 5 minutes depending on project complexity and GitHub runner availability.
+
+---
+
+## 🔒 Security & Privacy
+
+* **Local Signing:** Your Apple ID credentials are used strictly for authenticating with Apple's staging APIs via local device loopback (`127.0.0.1`) and are never sent to external third-party servers.
+* **Private Repositories:** All code uploaded to GitHub is pushed exclusively to private repositories under your personal GitHub account.
+
+---
+
+## 📜 Open Source & Licensing
+
+SwiftStore is a fork/derivative of [SideStore](https://github.com/SideStore/SideStore) and is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
+
+* **Upstream Attribution:** Contains code, submodules, and logic derived from SideStore and AltStore under AGPL-3.0.
+* **Copyleft:** Any modifications or extensions to this repository must remain open-source under the same AGPL-3.0 terms.
+
+---
+
+<p align="center">
+  Built with ❤️ for the iPad developer & sideloading community.
+</p>
