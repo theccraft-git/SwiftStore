@@ -1,4 +1,5 @@
 // swift-tools-version:5.8
+// SwiftStore
 import PackageDescription
 
 let package = Package(
