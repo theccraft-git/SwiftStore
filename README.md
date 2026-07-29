@@ -1,5 +1,9 @@
 # SwiftStore 🚀
 
+<p align="center">
+  <img src="logo.png" alt="SwiftStore Logo" width="150" height="150">
+</p>
+
 > **The All-In-One iOS & iPadOS Creation Studio and Sideloading Hub**
 
 **SwiftStore** is a PC-free tool designed for iPad and iOS users. It bridges Apple’s **Swift Playgrounds** with GitHub Actions cloud compilation, allowing you to build, sign, and install your own custom applications—directly on your device, completely free, and without needing a Mac, Xcode, or a paid Apple Developer account.
