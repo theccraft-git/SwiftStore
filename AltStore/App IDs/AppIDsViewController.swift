@@ -6,11 +6,11 @@
 //  Copyright © 2020 Riley Testut. All rights reserved.
 //
 
-import UIKit
+@preconcurrency import UIKit
 import CoreData
 @preconcurrency import AltStoreCore
 import SwiftUI
-import AltSign
+@preconcurrency import AltSign
 
 extension AppIDsViewController {
     static let didDismissNotification = Notification.Name("AppIDsViewControllerDidDismissNotification")
@@ -167,12 +167,11 @@ private extension AppIDsViewController
         guard !self.isLoading else { return }
         self.isLoading = true
         
-        AppManager.shared.fetchAppIDs { [weak self] (result) in
+        AppManager.shared.syncAppIDs(presentingViewController: self) { [weak self] (result) in
             guard let self = self else { return }
             do
             {
-                let (_, context) = try result.get()
-                try context.save()
+                try result.get()
             }
             catch
             {
@@ -199,11 +198,9 @@ private extension AppIDsViewController
             self.collectionView.refreshControl?.endRefreshing()
             self.activityIndicatorBarButtonItem.isIndicatingActivity = false
             
-            #if DEBUG
-            let allowsEditMode = DatabaseManager.shared.activeTeam() != nil
-            #else
-            let allowsEditMode = DatabaseManager.shared.activeTeam()?.type != .free
-            #endif
+            let activeTeamType = DatabaseManager.shared.activeTeam()?.type
+            let allowsEditMode = (activeTeamType == .individual || activeTeamType == .organization) &&
+                                 (activeTeamType != .free || UserDefaults.standard.freeAcctAppIdDeletion)
             
             if allowsEditMode
             {

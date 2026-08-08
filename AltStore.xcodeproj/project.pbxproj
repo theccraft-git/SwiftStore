@@ -139,6 +139,16 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A8000551301F0E1B007E29D5 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Core/Certificates/CertificateASN1Parser.swift,
+				Core/Certificates/CertificateManager.swift,
+				Core/Certificates/CertificateStore.swift,
+				Core/Logging/SideStoreLogging.swift,
+			);
+			target = BF66EE7D2501AE50007EE018 /* AltStoreCore */;
+		};
 		A8EEC0BF2F4AF7FB00F2436D /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -200,24 +210,131 @@
 		A8EECF492F4B195000F2436D /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				EMProxyWrapper.swift,
-				MinimuxerWrapper.swift,
-				OperationLogging.swift,
-				SideStoreLogging.swift,
-				URLHandler.swift,
+				AppBootManager.swift,
+				AppConstants.swift,
+				Core/Anisette/AnisetteConfigManager.swift,
+				Core/Anisette/AnisetteDataManager.swift,
+				Core/Anisette/AnisetteServersManager.swift,
+				Core/Auth/AuthManager.swift,
+				Core/Auth/DeveloperPortalService.swift,
+				Core/Certificates/CertificateASN1Parser.swift,
+				Core/Certificates/CodeSignValidator.swift,
+				Core/DeviceApi/EMProxyWrapper.swift,
+				Core/DeviceApi/MinimuxerWrapper.swift,
+				Core/Logging/OperationLogging.swift,
+				Core/Logging/SideStoreLogging.swift,
+				Core/Operations/AppOperation.swift,
+				Core/Operations/AsyncOperation.swift,
+				Core/Operations/Errors/OperationError.swift,
+				Core/Operations/Errors/SourceError.swift,
+				Core/Operations/Errors/VerificationError.swift,
+				Core/Operations/OperationContexts.swift,
+				Core/Operations/OperationEntitlements.swift,
+				Core/Operations/OperationStep.swift,
+				Core/Operations/OperationStepDefinition.swift,
+				Core/Operations/PipelineExecutor.swift,
+				Core/Operations/PipelineOperations/CacheAppOperation.swift,
+				Core/Operations/PipelineOperations/CacheSigningCertOperation.swift,
+				Core/Operations/PipelineOperations/ChangeAppIconOperation.swift,
+				Core/Operations/PipelineOperations/CleanStagedAppOperation.swift,
+				Core/Operations/PipelineOperations/EnableJITOperation.swift,
+				Core/Operations/PipelineOperations/ExportResignedAppOperation.swift,
+				Core/Operations/PipelineOperations/FetchAnisetteDataOperation.swift,
+				Core/Operations/PipelineOperations/FetchProvisioningProfilesOperation.swift,
+				Core/Operations/PipelineOperations/InstallAppOperation.swift,
+				Core/Operations/PipelineOperations/MarkAppInactiveOperation.swift,
+				Core/Operations/PipelineOperations/PerformBackupRestoreOperation.swift,
+				Core/Operations/PipelineOperations/PreflightChecksOperation.swift,
+				Core/Operations/PipelineOperations/PrepareAppExtensionBundleIDsOperation.swift,
+				Core/Operations/PipelineOperations/RefreshAppOperation.swift,
+				Core/Operations/PipelineOperations/RemoveAppExtensionsOperation.swift,
+				Core/Operations/PipelineOperations/RemoveAppOperation.swift,
+				Core/Operations/PipelineOperations/RemoveBackupDataOperation.swift,
+				Core/Operations/PipelineOperations/ResignAppOperation.swift,
+				Core/Operations/PipelineOperations/SendAppOperation.swift,
+				Core/Operations/PipelineOperations/StageAppOperation.swift,
+				Core/Operations/PipelineOperations/StageBackupAppOperation.swift,
+				Core/Operations/PipelineOperations/UninstallAppOperation.swift,
+				Core/Operations/PipelineOperations/UpdateAppCertificateOperation.swift,
+				Core/Operations/PipelineOperations/UserCustomizationOperation.swift,
+				Core/Operations/PipelineOperations/VerifyAppOperation.swift,
+				Core/Operations/PipelineOperations/VerifyCertificateOperation.swift,
+				Core/Operations/PipelineRunner.swift,
+				Core/Operations/RefreshGroup.swift,
+				Core/Operations/StandaloneOperations/AuthenticationOperation.swift,
+				Core/Operations/StandaloneOperations/BackgroundRefreshAppsOperation.swift,
+				Core/Operations/StandaloneOperations/ClearAppCacheOperation.swift,
+				Core/Operations/StandaloneOperations/DeactivateAppOperation.swift,
+				Core/Operations/StandaloneOperations/DownloadAppOperation.swift,
+				Core/Operations/StandaloneOperations/FetchSourceOperation.swift,
+				Core/Operations/StandaloneOperations/ScheduleExpirationWarningNotificationOperation.swift,
+				Core/Operations/StandaloneOperations/SyncAppIDsOperation.swift,
+				Core/Operations/StandaloneOperations/UpdateKnownSourcesOperation.swift,
+				Core/Pairing/PairingFileManager.swift,
+				Core/Storage/CacheManager.swift,
+				DeepLinks/ExportCertificateDialog.swift,
+				DeepLinks/InstallAppDialog.swift,
+				DeepLinks/URLHandler.swift,
+				"Extensions/NSAttributedString+Markdown.swift",
 				Utils/common/BuildInfo.swift,
 				Utils/common/DateTimeUtil.swift,
 				Utils/common/FileOutputStream.swift,
 				Utils/common/OutputStream.swift,
+				Utils/concurrency/TaskChainCoalescer.swift,
+				Utils/concurrency/TaskChainSerializer.swift,
+				Utils/concurrency/TaskMutexSerializer.swift,
 				Utils/datastructures/LinkedHashMap.swift,
 				Utils/datastructures/TreeMap.swift,
 				Utils/dignostics/database/CoreDataHelper.swift,
 				Utils/dignostics/errors/ErrorProcessing.swift,
 				Utils/dignostics/operations/OperationsLoggingControl.swift,
 				Utils/importexport/ImportExport.swift,
+				Utils/iostreams/AbstractClassError.swift,
 				Utils/iostreams/ConsoleLog.swift,
 				Utils/iostreams/ConsoleLogger.swift,
-				Views/UIKit/CollapsingMarkdownView.swift,
+				Views/Components/AppInfoView.swift,
+				Views/Components/BundleResourceBrowserView.swift,
+				Views/Components/InfoPlistContainerView.swift,
+				Views/Components/UIKit/CollapsingMarkdownView.swift,
+				Views/Settings/Advanced/Anisette/AnisetteDataView.swift,
+				Views/Settings/Advanced/BackupRestore/BackupAndRestoreView.swift,
+				Views/Settings/Advanced/CacheMgmt/CacheManagementView.swift,
+				Views/Settings/Advanced/CacheMgmt/CacheViewModel.swift,
+				Views/Settings/Advanced/Certificates/ActiveCertSectionView.swift,
+				Views/Settings/Advanced/Certificates/CertificateDetailView.swift,
+				Views/Settings/Advanced/Certificates/CertificateExporter.swift,
+				Views/Settings/Advanced/Certificates/CertificateRowView.swift,
+				Views/Settings/Advanced/Certificates/CertificatesListView.swift,
+				Views/Settings/Advanced/Certificates/CertificatesView.swift,
+				Views/Settings/Advanced/Certificates/CertificatesViewModel.swift,
+				Views/Settings/Advanced/Certificates/CertificateTypes.swift,
+				Views/Settings/Advanced/Certificates/PrivateKeyTextEditor.swift,
+				Views/Settings/Advanced/Certificates/PrivateKeyTextInputView.swift,
+				Views/Settings/Advanced/Certificates/RevokeAlertViewController.swift,
+				Views/Settings/Advanced/Certificates/SetCertificateAlertViewController.swift,
+				Views/Settings/Advanced/Certificates/SignableCertificatesListViewController.swift,
+				Views/Settings/Advanced/Connection/ConnectionConfig.swift,
+				Views/Settings/Advanced/Connection/ConnectionConfigView.swift,
+				Views/Settings/Advanced/NetworkDiscovery/BonjourDiscoveryManager.swift,
+				Views/Settings/Advanced/NetworkDiscovery/BonjourDiscoveryManagerV2.swift,
+				Views/Settings/Advanced/NetworkDiscovery/BonjourDiscoveryTypes.swift,
+				Views/Settings/Advanced/NetworkDiscovery/BonjourDiscoveryView.swift,
+				Views/Settings/Advanced/NetworkDiscovery/BonjourDiscoveryViewV2.swift,
+				Views/Settings/Advanced/NetworkDiscovery/LocalNetworkPermissionChecker.swift,
+				Views/Settings/Advanced/UserCustomizations/UserCustomizationsView.swift,
+				Views/Settings/Advanced/WirelessPair/WirelessPairManager.swift,
+				Views/Settings/Advanced/WirelessPair/WirelessPairView.swift,
+				Views/Settings/Auth/ExportAccountAlertViewController.swift,
+				Views/Settings/Auth/SignOutAlertViewController.swift,
+				Views/Settings/Diagnostics/DeveloperOptionsView.swift,
+				Views/Settings/Diagnostics/ExperimentalFeaturesView.swift,
+				Views/Settings/Diagnostics/OperationsLoggingControlView.swift,
+				Views/Settings/TechyThings/ErrorLog/ConsoleLogView.swift,
+				Views/Settings/TechyThings/HealthCheck/HealthCheckView.swift,
+				Views/Settings/TechyThings/HealthCheck/HealthCheckViewModel.swift,
+				Views/Settings/TechyThings/StorageExplorer/DirectoryExplorerView.swift,
+				Views/Settings/TechyThings/StorageExplorer/StorageExplorerView.swift,
+				Views/Settings/TechyThings/StorageExplorer/StorageExplorerViewModel.swift,
 			);
 			target = BFD247692284B9A500981D42 /* SideStore */;
 		};
@@ -255,7 +372,7 @@
 		A8EEC3D92F4B0FC800F2436D /* SideBackup */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (A8EEC3E22F4B0FC800F2436D /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = SideBackup; sourceTree = "<group>"; };
 		A8EEC71D2F4B10D900F2436D /* xcconfigs */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = xcconfigs; sourceTree = "<group>"; };
 		A8EEC8412F4B146A00F2436D /* AltStore */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (A8EEC8CB2F4B146B00F2436D /* PBXFileSystemSynchronizedBuildFileExceptionSet */, A8EEC8CC2F4B146B00F2436D /* PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet */, A8EEC8CD2F4B146B00F2436D /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = AltStore; sourceTree = "<group>"; };
-		A8EECF2A2F4B195000F2436D /* SideStore */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (A8EECF492F4B195000F2436D /* PBXFileSystemSynchronizedBuildFileExceptionSet */, A8EECF4A2F4B195000F2436D /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = SideStore; sourceTree = "<group>"; };
+		A8EECF2A2F4B195000F2436D /* SideStore */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (A8EECF492F4B195000F2436D /* PBXFileSystemSynchronizedBuildFileExceptionSet */, A8000551301F0E1B007E29D5 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, A8EECF4A2F4B195000F2436D /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = SideStore; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1167,7 +1284,7 @@
 				);
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphonesimulator iphoneos macosx";
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG BETA";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = BETA;
 				SWIFT_COMPILATION_MODE = singlefile;
 				SWIFT_ENFORCE_EXCLUSIVE_ACCESS = "debug-only";
 				SWIFT_OPTIMIZATION_LEVEL = "-Osize";

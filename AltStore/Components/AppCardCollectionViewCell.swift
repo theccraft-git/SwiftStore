@@ -6,8 +6,8 @@
 //  Copyright © 2023 Riley Testut. All rights reserved.
 //
 
-import UIKit
-import AltStoreCore
+@preconcurrency import UIKit
+@preconcurrency import AltStoreCore
 
 import Nuke
 
@@ -29,6 +29,7 @@ class AppCardCollectionViewCell: UICollectionViewCell
     
     private var screenshots: [AppScreenshot] = [] {
         didSet {
+            guard self.screenshots != oldValue else { return }
             self.dataSource.items = self.screenshots
             
             if self.screenshots.isEmpty
@@ -257,11 +258,9 @@ private extension AppCardCollectionViewCell
         }
         dataSource.prefetchHandler = { (screenshot, indexPath, completionHandler) in
             let imageURL = screenshot.imageURL
-            return RSTAsyncBlockOperation() { (operation) in
+            Task.detached(priority: .background) {
                 let request = ImageRequest(url: imageURL)
                 ImagePipeline.shared.loadImage(with: request, progress: nil) { result in
-                    guard !operation.isCancelled else { return operation.finish() }
-                    
                     switch result
                     {
                     case .success(let response): completionHandler(response.image, nil)
@@ -269,6 +268,7 @@ private extension AppCardCollectionViewCell
                     }
                 }
             }
+            return nil
         }
         dataSource.prefetchCompletionHandler = { (cell, image, indexPath, error) in
             let cell = cell as! AppScreenshotCollectionViewCell

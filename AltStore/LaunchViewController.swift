@@ -6,12 +6,12 @@
 //  Copyright © 2019 Riley Testut. All rights reserved.
 //
 
-import UIKit
+@preconcurrency import UIKit
 
 import WidgetKit
 
-import AltSign
-import AltStoreCore
+@preconcurrency import AltSign
+@preconcurrency import AltStoreCore
 import UniformTypeIdentifiers
 
 let pairingFileName = "ALTPairingFile.mobiledevicepairing"
@@ -141,7 +141,7 @@ final class LaunchViewController: UIViewController, UIDocumentPickerDelegate {
             debugLog("[LaunchViewController] Successfully copied and saved pairing file to: \(documentsPath.path)")
             UserDefaults.standard.isPairingReset = false
             
-            Task {
+            Task.detached {
                 do {
                     try await AppBootManager.shared.startMinimuxer(pairingFile: pairingString)
                 } catch {
@@ -183,14 +183,13 @@ final class LaunchViewController: UIViewController, UIDocumentPickerDelegate {
             try? FileManager.default.removeItem(at: file)
         }
         Keychain.shared.reset()
-        Keychain.shared.appleIDEmailAddress = account.email
-        Keychain.shared.appleIDPassword = account.password
-        Keychain.shared.adiPb = account.adiPB
-        Keychain.shared.identifier = account.local_user
+        AuthManager.shared.currentAppleID = account.email
+        AuthManager.shared.password = account.password
+        AnisetteDataManager.shared.anisetteAdiBlob = account.anisetteAdiBlob
+        AnisetteDataManager.shared.anisetteIdentifier = account.anisetteIdentifier
         do {
-            let altCert = try ALTCertificate(p12Data: account.cert, password: account.certpass)
-            Keychain.shared.signingCertificate = altCert.encryptedP12Data(withPassword: "")!
-            Keychain.shared.signingCertificatePassword = account.certpass
+            let altCert = try CertificateStore.load(account.certificateData, password: account.certificatePassword)
+            try CertificateManager.shared.setActiveCertificate(altCert)
             let toastView = ToastView(text: NSLocalizedString("Successfully imported '\(account.email)'!", comment: ""), detailText: "SideStore should be fully operational!")
             return toastView.show(in: self)
         } catch {
@@ -233,7 +232,7 @@ extension LaunchViewController {
         guard !didFinishLaunching else { return }
         didFinishLaunching = true
         
-        AppManager.shared.update()
+        await AppManager.shared.reconcileInstalledApps()
         AppManager.shared.updateAllSources { result in
             guard case .failure(let error) = result else { return }
             debugLog("Failed to update sources on launch. \(error.localizedDescription)")
@@ -251,14 +250,14 @@ extension LaunchViewController {
             toastView.show(in: self.destinationViewController!.selectedViewController ?? self.destinationViewController!)
         }
         updateKnownSources()
-        WidgetCenter.shared.reloadAllTimelines()
+        await WidgetDataManager.publishCurrentInstalledApps(in: DatabaseManager.shared.viewContext)
         didFinishLaunching = true
         
         let destinationVC = destinationViewController!
         
         let elapsed = abs(startTime.timeIntervalSinceNow)
         let remaining = elapsed >= 1 ? 0 : 1 - elapsed
-        try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+        try? await Task.sleep(nanoseconds: UInt64(remaining * 500_000_000))
         
         destinationVC.loadViewIfNeeded()
         addChild(destinationVC)
