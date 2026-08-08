@@ -8,8 +8,7 @@
 
 import Foundation
 import KeychainAccess
-
-import AltSign
+@preconcurrency import AltSign
 
 @propertyWrapper
 public struct KeychainItem<Value>
@@ -80,10 +79,20 @@ public class Keychain
     
     @KeychainItem(key: "adiPb")
     public var adiPb: String?
-    
-    // for some reason authenticated cert/session/team is completely not cached, which result in logging in for every request
-    // we save it here so when user logs out we can clear cached account/session/team
-    public var certificate: ALTCertificate? = nil
+
+    // MARK: - Dynamic Imported Certificates Storage
+
+    public subscript(certificateSerial serial: String) -> Data? {
+        get { try? self.keychain.getData("importedCert_" + serial) }
+        set {
+            if let data = newValue {
+                try? self.keychain.set(data, key: "importedCert_" + serial)
+            } else {
+                try? self.keychain.remove("importedCert_" + serial)
+            }
+        }
+    }
+
     public var session: ALTAppleAPISession? = nil
     public var team: ALTTeam? = nil
     
@@ -109,26 +118,31 @@ public class Keychain
         cert.privateKey = privateKey
         
         // 4. Create PKCS12 data structure
-        if let p12Data = cert.p12Data()
-        {
+        do {
+            let p12Data = try cert.unencryptedP12Data()
             // 5. Store the new PKCS12 format in signingCertificate slot
-            try? self.keychain.set(p12Data, key: signingCertificateKey)
-            try? self.keychain.set("", key: "signingCertificatePassword")
+            try self.keychain.set(p12Data, key: signingCertificateKey)
+            try self.keychain.set("", key: "signingCertificatePassword")
             
             // 6. Clear legacy keys
-            try? self.keychain.remove(privateKeyKey)
-            try? self.keychain.remove(serialNumberKey)
+            try self.keychain.remove(privateKeyKey)
+            try self.keychain.remove(serialNumberKey)
             
             debugLog("[Keychain] Successfully migrated legacy certificate and private key to PKCS12 format and cleared legacy keys.")
+        } catch {
+            debugLog("[Keychain] Failed to migrate legacy certificate to PKCS12 format: \(error)")
         }
     }
     
-    public func reset(keepCertificate: Bool = false)
+    public func reset(keepCertificate: Bool = false, keepAnisetteData: Bool = true)
     {
+        debugLog("[Keychain] Resetting Keychain items (keepCertificate: \(keepCertificate), keepAnisetteData: \(keepAnisetteData))...")
+        
         self.appleIDEmailAddress = nil
         self.appleIDPassword = nil
         self.appleIDAdsid = nil
         self.appleIDXcodeToken = nil
+        debugLog("[Keychain] Cleared Apple ID credentials & tokens (email, password, adsid, xcodeToken).")
         
         if !keepCertificate {
             // Legacy
@@ -137,10 +151,20 @@ public class Keychain
 
             self.signingCertificate = nil
             self.signingCertificatePassword = nil
+            debugLog("[Keychain] Cleared signing certificate & private key.")
+        } else {
+            debugLog("[Keychain] Preserved signing certificate.")
         }
         
-        self.certificate = nil
+        if !keepAnisetteData {
+            self.adiPb = nil
+            debugLog("[Keychain] Cleared Anisette ADI data (adiPb).")
+        } else {
+            debugLog("[Keychain] Preserved Anisette ADI data (adiPb).")
+        }
+        
         self.session = nil
         self.team = nil
+        debugLog("[Keychain] Cleared in-memory session, certificate, and team instances.")
     }
 }

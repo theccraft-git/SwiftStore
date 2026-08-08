@@ -6,10 +6,10 @@
 //  Copyright © 2019 Riley Testut. All rights reserved.
 //
 
-import UIKit
+@preconcurrency import UIKit
 import Combine
 import CoreData
-import AltStoreCore
+@preconcurrency import AltStoreCore
 
 import Nuke
 
@@ -263,13 +263,10 @@ private extension BrowseViewController
             let tintColor = app.tintColor ?? .altPrimary
             cell.tintColor = tintColor
         }
-        dataSource.prefetchHandler = { (storeApp, indexPath, completionHandler) -> Foundation.Operation? in
+        dataSource.prefetchHandler = { (storeApp, indexPath, completionHandler) in
             let iconURL = storeApp.iconURL
-            
-            return RSTAsyncBlockOperation() { (operation) in
+            return Task.detached(priority: .background) {
                 ImagePipeline.shared.loadImage(with: iconURL, progress: nil) { result in
-                    guard !operation.isCancelled else { return operation.finish() }
-                    
                     switch result
                     {
                     case .success(let response): completionHandler(response.image, nil)

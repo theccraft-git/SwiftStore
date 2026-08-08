@@ -6,9 +6,9 @@
 //  Copyright © 2019 Riley Testut. All rights reserved.
 //
 
-import UIKit
+@preconcurrency import UIKit
 
-import AltSign
+@preconcurrency import AltSign
 
 final class AuthenticationViewController: UIViewController
 {
@@ -145,7 +145,9 @@ private extension AuthenticationViewController
     
     @IBAction func cancel(_ sender: UIBarButtonItem)
     {
-        self.completionHandler?(nil)
+        self.dismiss(animated: true) { [weak self] in
+            self?.completionHandler?(nil)
+        }
     }
 }
 

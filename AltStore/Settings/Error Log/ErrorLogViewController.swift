@@ -6,11 +6,11 @@
 //  Copyright © 2022 Riley Testut. All rights reserved.
 //
 
-import UIKit
+@preconcurrency import UIKit
 import SafariServices
 import QuickLook
 import CoreData
-import AltStoreCore
+@preconcurrency import AltStoreCore
 
 import Nuke
 
@@ -185,7 +185,9 @@ private extension ErrorLogViewController
             cell.errorDescriptionTextView.accessibilityLabel = cell.errorDescriptionTextView.text
         }
         dataSource.prefetchHandler = { (loggedError, indexPath, completion) in
-            RSTAsyncBlockOperation { (operation) in
+            let iconURL = loggedError.storeApp?.iconURL
+            
+            Task.detached(priority: .background) {
                 loggedError.managedObjectContext?.perform {
                     if let installedApp = loggedError.installedApp
                     {
@@ -197,11 +199,9 @@ private extension ErrorLogViewController
                             }
                         }
                     }
-                    else if let storeApp = loggedError.storeApp
+                    else if let iconURL = iconURL
                     {
-                        ImagePipeline.shared.loadImage(with: storeApp.iconURL, progress: nil) { result in
-                            guard !operation.isCancelled else { return operation.finish() }
-                            
+                        ImagePipeline.shared.loadImage(with: iconURL, progress: nil) { result in
                             switch result
                             {
                             case .success(let response): completion(response.image, nil)
@@ -216,6 +216,7 @@ private extension ErrorLogViewController
                     }
                 }
             }
+            return nil
         }
         dataSource.prefetchCompletionHandler = { (cell, image, indexPath, error) in
             let cell = cell as! ErrorLogTableViewCell
