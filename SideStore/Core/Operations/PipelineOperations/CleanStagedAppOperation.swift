@@ -8,13 +8,16 @@
 
 @preconcurrency import UIKit
 import Foundation
-@preconcurrency import AltStoreCore
 
 final class CleanStagedAppOperation: BasePipelineOperation<InstallAppOperationContext, Void>, @unchecked Sendable {
     
     override func execute(parentProgress: Progress?) async throws {
+        let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[CleanStagedAppOperation] execute() started")
-        defer { debugLog("[CleanStagedAppOperation] execute() completed") }
+        defer {
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            debugLog("[CleanStagedAppOperation] execute() took: \(String(format: "%.3fs", elapsed))")
+        }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         self.setProgress(10)
         

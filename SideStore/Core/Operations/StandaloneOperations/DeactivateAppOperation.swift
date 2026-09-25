@@ -7,8 +7,7 @@
 //
 
 import Foundation
-@preconcurrency import AltStoreCore
-@preconcurrency import AltSign
+import SideSign
 import CoreData
 
 final class DeactivateAppOperation: BasePipelineOperation<PipelineOperationContext, InstalledApp>, @unchecked Sendable
@@ -21,28 +20,30 @@ final class DeactivateAppOperation: BasePipelineOperation<PipelineOperationConte
     }
     
     override func execute(parentProgress: Progress?) async throws -> InstalledApp {
+        let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[DeactivateAppOperation] execute() started")
-        defer { debugLog("[DeactivateAppOperation] execute() completed") }
+        defer {
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            debugLog("[DeactivateAppOperation] execute() took: \(String(format: "%.3fs", elapsed))")
+        }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         self.setProgress(10)
         
-        guard let backgroundContext = self.context.dbBackgroundContext else {
-            throw OperationError.invalidParameters("DeactivateAppOperation: context.dbBackgroundContext is nil")
-        }
+        let backgroundContext = self.context.dbBackgroundContext
         
         guard let app = self.app else {
             throw OperationError.invalidParameters("DeactivateAppOperation: target app is nil")
         }
         
-        
+        let appObjectID = app.objectID
         let installedApp = await backgroundContext.perform {
-            backgroundContext.object(with: app.objectID) as! InstalledApp
+            backgroundContext.object(with: appObjectID) as! InstalledApp
         }
 
         try await self.performDeactivate(for: installedApp)
         
         let result = await backgroundContext.perform {
-            backgroundContext.object(with: app.objectID) as! InstalledApp
+            backgroundContext.object(with:appObjectID) as! InstalledApp
         }
         self.setProgress(100)
         return result
@@ -59,13 +60,20 @@ final class DeactivateAppOperation: BasePipelineOperation<PipelineOperationConte
         let endProgress: Int64 = 90
         let range = endProgress - startProgress
         
-        for (index, identifier) in allIdentifiers.enumerated() {
-            try await removeProvisioningProfile(identifier)
-            if range > 0 {
-                let percent = startProgress + Int64(Double(index + 1) / Double(count) * Double(range))
-                self.setProgress(percent)
+        do {
+            await CellularRefreshManager.shared.turnOffDataIfNeeded()
+            for (index, identifier) in allIdentifiers.enumerated() {
+                try await removeProvisioningProfile(identifier)
+                if range > 0 {
+                    let percent = startProgress + Int64(Double(index + 1) / Double(count) * Double(range))
+                    self.setProgress(percent)
+                }
+                removedAny = true
             }
-            removedAny = true
+            await CellularRefreshManager.shared.turnOnDataIfNeeded()
+        } catch {
+            await CellularRefreshManager.shared.turnOnDataIfNeeded()
+            throw error
         }
         guard removedAny else {
             throw OperationError.invalidParameters("DeactivateAppOperation: no profiles found to remove")

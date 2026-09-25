@@ -8,7 +8,6 @@
 
 import Foundation
 import CoreData
-@preconcurrency import AltStoreCore
 import SemanticVersion
 
 final class FetchSourceOperation: BaseStandaloneOperation<StandaloneOperationContext, Source>, @unchecked Sendable {
@@ -37,10 +36,8 @@ final class FetchSourceOperation: BaseStandaloneOperation<StandaloneOperationCon
         self.sourceURL = source.sourceURL
         self.session = URLSession.shared
         try super.init(context: context)
-        if let dbContext = context.dbBackgroundContext {
-            dbContext.performAndWait {
-                self.source = dbContext.object(with: source.objectID) as? Source
-            }
+        context.dbBackgroundContext.performAndWait {
+            self.source = context.dbBackgroundContext.object(with: source.objectID) as? Source
         }
     }
     
@@ -51,23 +48,27 @@ final class FetchSourceOperation: BaseStandaloneOperation<StandaloneOperationCon
     }
     
     override func execute(parentProgress: Progress?) async throws -> Source {
+        let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[FetchSourceOperation] execute() started")
-        defer { debugLog("[FetchSourceOperation] execute() completed") }
+        defer {
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            debugLog("[FetchSourceOperation] execute() took: \(String(format: "%.3fs", elapsed))")
+        }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         
-        guard let dbContext = self.context.dbBackgroundContext else {
-            throw OperationError.invalidParameters("FetchSourceOperation: context.dbBackgroundContext is nil")
-        }
+        let dbContext = self.context.dbBackgroundContext
         
         if let source = self.source {
             // Check if source is blocked before fetching it.
+            let sourceObjectID = source.objectID
             try dbContext.performAndWait {
-                try self.verifyExistingSource(source)
+                try self.verifyExistingSource(sourceObjectID)
             }
         }
         
         var request = URLRequest(url: self.sourceURL)
         request.cachePolicy = .reloadIgnoringLocalCacheData     // don't use local caching
+        request.timeoutInterval = AppConstants.Sources.fetchTimeout
 
         let (data, response) = try await self.fetchSourceData(with: request)
         
@@ -99,7 +100,7 @@ final class FetchSourceOperation: BaseStandaloneOperation<StandaloneOperationCon
                 } else if let data = data, let response = response {
                     continuation.resume(returning: (data, response))
                 } else {
-                    continuation.resume(throwing: OperationError.unknown())
+                    continuation.resume(throwing: OperationError.invalidResponse(reason: "\(URLError(.badServerResponse).localizedDescription): Server returned no data or response."))
                 }
             }
             dataTask.resume()
@@ -107,16 +108,13 @@ final class FetchSourceOperation: BaseStandaloneOperation<StandaloneOperationCon
         }
     }
     
-    private func verifyExistingSource(_ source: Source) throws {
-        guard let dbContext = self.context.dbBackgroundContext else {
-            throw OperationError.invalidParameters("FetchSourceOperation: context.dbBackgroundContext is nil")
-        }
-        let source = dbContext.object(with: source.objectID) as! Source
+    private func verifyExistingSource(_ sourceObjectID: NSManagedObjectID) throws {
+        let source = self.context.dbBackgroundContext.object(with: sourceObjectID) as! Source
         try self.verifySourceNotBlocked(source, response: nil)
     }
     
     private func performDecodeAndSave(data: Data, response: URLResponse, childContext: NSManagedObjectContext) throws -> String {
-        let decoder = AltStoreCore.JSONDecoder()
+        let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom({ (decoder) -> Date in
             let container = try decoder.singleValueContainer()
             let text = try container.decode(String.self)
@@ -139,9 +137,7 @@ final class FetchSourceOperation: BaseStandaloneOperation<StandaloneOperationCon
         decoder.managedObjectContext = childContext
         decoder.sourceURL = self.sourceURL
         
-        if #available(iOS 15, *) {
-            decoder.allowsJSON5 = true
-        }
+        decoder.allowsJSON5 = true
         
         let source: Source
         
@@ -251,7 +247,7 @@ final class FetchSourceOperation: BaseStandaloneOperation<StandaloneOperationCon
     }
     
     private func verifySourceNotBlocked(_ source: Source, response: URLResponse?) throws {
-        guard let blockedSources = UserDefaults.shared.blockedSources else { return }
+        guard let blockedSources = UserDefaults.standard.blockedSources else { return }
         
         for blockedSource in blockedSources {
             guard

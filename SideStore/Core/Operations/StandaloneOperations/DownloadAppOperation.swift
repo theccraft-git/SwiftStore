@@ -7,10 +7,8 @@
 //
 
 import Foundation
-import WebKit
 import UniformTypeIdentifiers
-@preconcurrency import AltStoreCore
-@preconcurrency import AltSign
+import SideSign
 
 final class DownloadAppOperation: BasePipelineOperation<InstallAppOperationContext, ALTApplication>, @unchecked Sendable {
     private(set) var app: AppProtocol
@@ -22,6 +20,12 @@ final class DownloadAppOperation: BasePipelineOperation<InstallAppOperationConte
 
     private let session = URLSession(configuration: .default)
     private let temporaryDirectory = FileManager.default.uniqueTemporaryURL()
+    private var activeDownloadTask: URLSessionDownloadTask?
+
+    override func cancel() {
+        super.cancel()
+        self.activeDownloadTask?.cancel()
+    }
 
     init(app: AppProtocol, destinationURL: URL, context: InstallAppOperationContext) throws {
         self.app = app
@@ -35,9 +39,15 @@ final class DownloadAppOperation: BasePipelineOperation<InstallAppOperationConte
     }
 
     override func execute(parentProgress: Progress?) async throws -> ALTApplication {
+        let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[DownloadAppOperation] execute() started")
         defer {
-            debugLog("[DownloadAppOperation] execute() completed")
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            debugLog("[DownloadAppOperation] execute() took: \(String(format: "%.3fs", elapsed))")
+        }
+        try await super.executePreconditionCheck(parentProgress: parentProgress)
+        
+        defer {
             if FileManager.default.fileExists(atPath: self.temporaryDirectory.path) {
                 do {
                     try FileManager.default.removeItem(at: self.temporaryDirectory)
@@ -46,7 +56,6 @@ final class DownloadAppOperation: BasePipelineOperation<InstallAppOperationConte
                 }
             }
         }
-        try await super.executePreconditionCheck(parentProgress: parentProgress)
         
         if self.isCancelled { throw OperationError.cancelled }
         if let error = self.context.error { throw error }
@@ -60,8 +69,7 @@ final class DownloadAppOperation: BasePipelineOperation<InstallAppOperationConte
                 appVersion = version
             } else if let storeApp = app as? StoreApp {
                 guard let latestVersion = storeApp.latestAvailableVersion else {
-                    let failureReason = String(format: NSLocalizedString("The latest version of %@ could not be downloaded.", comment: ""), self.appName)
-                    throw OperationError.unknown(failureReason: failureReason)
+                    throw OperationError.missingUpdate(appName: self.appName)
                 }
 
                 // Attempt to download latest _available_ version, and fall back to older versions if necessary.
@@ -80,8 +88,8 @@ final class DownloadAppOperation: BasePipelineOperation<InstallAppOperationConte
             return try await self.download(appVersion ?? app)
             
         } catch let error as VerificationError where error.code == .iOSVersionNotSupported {
-            guard let presentingViewController = self.context.presentingViewController,
-                  let storeApp = app.storeApp,
+            let handler = self.context.handler.unsupportedVersionHandler
+            guard let storeApp = app.storeApp,
                   let latestSupportedVersion = storeApp.latestSupportedVersion,
                   case let version = latestSupportedVersion.version,
                   version != storeApp.installedApp?.version
@@ -96,28 +104,17 @@ final class DownloadAppOperation: BasePipelineOperation<InstallAppOperationConte
                 }
             }
 
-            let title = NSLocalizedString("Unsupported iOS Version", comment: "")
-            let message = error.localizedDescription + "\n\n" + NSLocalizedString("Would you like to download the last version compatible with this device instead?", comment: "")
             let localizedVersion = latestSupportedVersion.localizedVersion
+            let shouldDownload = try await handler.resolveUnsupportediOSVersion(
+                errorDescription: error.localizedDescription,
+                appName: self.appName,
+                compatibleVersion: localizedVersion
+            )
 
-            return try await withCheckedThrowingContinuation { continuation in
-                Task { @MainActor in
-                    let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert)
-                    alertController.addAction(UIAlertAction(title: UIAlertAction.cancel.title, style: UIAlertAction.cancel.style) { _ in
-                        continuation.resume(throwing: OperationError.cancelled)
-                    })
-                    alertController.addAction(UIAlertAction(title: String(format: NSLocalizedString("Download %@ %@", comment: ""), self.appName, localizedVersion), style: .default) { _ in
-                        Task {
-                            do {
-                                let downloadedApp = try await self.download(latestSupportedVersion)
-                                continuation.resume(returning: downloadedApp)
-                            } catch let downloadError {
-                                continuation.resume(throwing: downloadError)
-                            }
-                        }
-                    })
-                    presentingViewController.present(alertController, animated: true)
-                }
+            if shouldDownload {
+                return try await self.download(latestSupportedVersion)
+            } else {
+                throw OperationError.cancelled
             }
         }
     }
@@ -132,7 +129,7 @@ final class DownloadAppOperation: BasePipelineOperation<InstallAppOperationConte
     
     private func download(@Managed _ app: AppProtocol) async throws -> ALTApplication {
         guard let sourceURL = self.sourceURL else {
-            throw OperationError.appNotFound(name: self.appName)
+            throw OperationError.invalidParameters("Missing download URL for '\(self.appName)'.")
         }
         if let appVersion = app as? AppVersion {
             // All downloads go through this path, and `app` is
@@ -144,21 +141,25 @@ final class DownloadAppOperation: BasePipelineOperation<InstallAppOperationConte
         let appBundle = try await downloadIPA(from: sourceURL)
         
         if self.context.bundleIdentifier == StoreApp.dolphinAppID, self.context.bundleIdentifier != appBundle.bundleIdentifier {
-            if var infoPlist = NSDictionary(contentsOf: appBundle.bundle.infoPlistURL) as? [String: Any] {
-                // Manually update the app's bundle identifier to match the one specified in the source.
-                // This allows people who previously installed the app to still update and refresh normally.
-                infoPlist[kCFBundleIdentifierKey as String] = StoreApp.dolphinAppID
-                (infoPlist as NSDictionary).write(to: appBundle.bundle.infoPlistURL, atomically: true)
-            }
+            // Manually update the app's bundle identifier to match the one specified in the source.
+            // This allows people who previously installed the app to still update and refresh normally.
+            try? appBundle.updateInfoPlist(with: [kCFBundleIdentifierKey as String: StoreApp.dolphinAppID])
         }
         
         let dependencies = try await self.downloadDependencies(for: appBundle)
+        if !dependencies.isEmpty {
+            self.debugLog("[DownloadAppOperation] Downloaded \(dependencies.count) dependencies for \(appBundle.name): \(dependencies.map(\.lastPathComponent))")
+        }
         
-        try FileManager.default.copyItem(at: appBundle.fileURL, to: self.destinationURL, shouldReplace: true)
+        debugLog("[DownloadAppOperation] Moving extracted bundle from \(appBundle.fileURL.path) to destination \(self.destinationURL.path)")
+        try FileManager.default.moveItem(at: appBundle.fileURL, to: self.destinationURL, shouldReplace: true)
+        debugLog("[DownloadAppOperation] Moving bundle to destination succeeded")
         
-        guard let copiedAppBundle = ALTApplication(fileURL: self.destinationURL) else { throw OperationError.invalidApp }
+        guard let movedAppBundle = ALTApplication(fileURL: self.destinationURL) else {
+            throw OperationError.missingAppBundle(reason: "Could not load moved app bundle at '\(self.destinationURL.lastPathComponent)'")
+        }
         self.setProgress(100)
-        return copiedAppBundle
+        return movedAppBundle
     }
     
     func downloadIPA(from sourceURL: URL) async throws -> ALTApplication {
@@ -178,18 +179,19 @@ final class DownloadAppOperation: BasePipelineOperation<InstallAppOperationConte
             }
         }
         
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDirectory) else {
-            throw OperationError.appNotFound(name: self.appName)
+        guard let resourceValues = try? fileURL.resourceValues(forKeys: [.isDirectoryKey]) else {
+            throw OperationError.missingAppBundle(reason: "File does not exist at '\(fileURL.lastPathComponent)'")
         }
         
         try FileManager.default.createDirectory(at: self.temporaryDirectory, withIntermediateDirectories: true, attributes: nil)
         
         let appBundleURL: URL
         
-        if isDirectory.boolValue {
+        if resourceValues.isDirectory == true {
             // Directory, so assuming this is .app bundle.
-            guard Bundle(url: fileURL) != nil else { throw OperationError.invalidApp }
+            guard ALTApplication(fileURL: fileURL) != nil else {
+                throw OperationError.missingAppBundle(reason: "Directory at '\(fileURL.lastPathComponent)' is not a valid bundle directory")
+            }
             
             appBundleURL = self.temporaryDirectory.appendingPathComponent(fileURL.lastPathComponent)
             try FileManager.default.copyItem(at: fileURL, to: appBundleURL)
@@ -204,10 +206,12 @@ final class DownloadAppOperation: BasePipelineOperation<InstallAppOperationConte
             self.context.ipaURL = ipaURL
         }
         
-        guard let appBundle = ALTApplication(fileURL: appBundleURL) else { throw OperationError.invalidApp }
+        guard let appBundle = ALTApplication(fileURL: appBundleURL) else {
+            throw OperationError.missingAppBundle(reason: "Could not load unzipped app bundle at '\(appBundleURL.lastPathComponent)'")
+        }
 
         // perform cleanup of the temp files
-        if(FileManager.default.fileExists(atPath: fileURL.path)){
+        if !sourceURL.isFileURL && FileManager.default.fileExists(atPath: fileURL.path) {
             verboseLog("[DownloadAppOperation] Removing downloaded temp file at: \(fileURL.path)")
             do {
                 try FileManager.default.removeItem(at: fileURL)
@@ -221,23 +225,18 @@ final class DownloadAppOperation: BasePipelineOperation<InstallAppOperationConte
     
     func downloadFile(from downloadURL: URL) async throws -> URL {
         debugLog("[DownloadAppOperation] download started: \(downloadURL)")
-        let delegate = DownloadProgressDelegate(progress: self.progress)
-        do {
-            let (fileURL, response) = try await self.session.download(from: downloadURL, delegate: delegate)
-            let resp = response as? HTTPURLResponse
-            if let resp {
-                debugLog("[DownloadAppOperation] downloadFile: completed with status \(resp.statusCode) at \(fileURL.path)")
-                guard resp.statusCode != 403 else { throw URLError(.noPermissionsToReadFile) }
-                guard resp.statusCode != 404 else { throw CocoaError(.fileNoSuchFile, userInfo: [NSURLErrorKey: downloadURL]) }
-            } else {
-                debugLog("[DownloadAppOperation] downloadFile: completed at \(fileURL.path)")
+        let fileURL: URL = try await withCheckedThrowingContinuation { continuation in
+            let delegate = DownloadProgressDelegate(progress: self.progress) { result in
+                continuation.resume(with: result)
             }
-            self.setProgress(75)
-            return fileURL
-        }catch{
-            debugLog("[DownloadAppOperation] download failed for url: \(downloadURL)")
-            throw error
+            let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+            let task = session.downloadTask(with: downloadURL)
+            delegate.task = task
+            self.activeDownloadTask = task
+            task.resume()
         }
+        self.setProgress(75)
+        return fileURL
     }
     
     
@@ -261,7 +260,7 @@ final class DownloadAppOperation: BasePipelineOperation<InstallAppOperationConte
     
     private func download(_ dependency: Dependency, for appBundle: ALTApplication) async throws -> URL {
         do {
-            let (fileURL, response) = try await self.session.download(from: dependency.downloadURL)
+            let (fileURL, _) = try await self.session.download(from: dependency.downloadURL)
             defer { try? FileManager.default.removeItem(at: fileURL) }
             
             let path = dependency.path ?? dependency.preferredFilename
@@ -321,21 +320,82 @@ extension DownloadAppOperation {
     }
 }
 
-private class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate {
+private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     let progress: Progress
+    weak var task: URLSessionDownloadTask?
+    private var lastLoggedPercent: Int = -1
+    private var lastLogTime: CFAbsoluteTime = 0
+    private var continuation: ((Result<URL, Error>) -> Void)?
+    private var hasResumed = false
+    private let lock = NSLock()
     
-    init(progress: Progress) {
+    init(progress: Progress, completion: @escaping (Result<URL, Error>) -> Void) {
         self.progress = progress
+        self.continuation = completion
+        super.init()
     }
     
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
         if totalBytesExpectedToWrite > 0 {
             let fraction = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
             self.progress.completedUnitCount = Int64(fraction * 75.0)
+            let percent = Int(fraction * 100.0)
+            let now = CFAbsoluteTimeGetCurrent()
+            if percent != self.lastLoggedPercent && (now - self.lastLogTime >= 0.3 || percent == 100) {
+                self.lastLoggedPercent = percent
+                self.lastLogTime = now
+                debugLog("[DownloadAppOperation] Download transfer: \(percent)% (\(ByteCountFormatter.string(fromByteCount: totalBytesWritten, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: totalBytesExpectedToWrite, countStyle: .file)))")
+            }
+        } else {
+            let mbWritten = Double(totalBytesWritten) / (1024.0 * 1024.0)
+            let estimatedFraction = min(0.95, mbWritten / 100.0)
+            self.progress.completedUnitCount = Int64(estimatedFraction * 75.0)
+            let percent = Int(estimatedFraction * 100.0)
+            let now = CFAbsoluteTimeGetCurrent()
+            if percent != self.lastLoggedPercent && (now - self.lastLogTime >= 0.3 || percent == 100) {
+                self.lastLoggedPercent = percent
+                self.lastLogTime = now
+                debugLog("[DownloadAppOperation] Download transfer: \(percent)% (\(ByteCountFormatter.string(fromByteCount: totalBytesWritten, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: totalBytesExpectedToWrite, countStyle: .file)))")
+            }
         }
     }
     
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        // Unused as download(from:delegate:) returns the file URL directly
+        defer { session.finishTasksAndInvalidate() }
+        if let resp = downloadTask.response as? HTTPURLResponse {
+            debugLog("[DownloadAppOperation] downloadFile: completed with status \(resp.statusCode) at \(location.path)")
+            if resp.statusCode == 403 {
+                finish(with: .failure(URLError(.noPermissionsToReadFile)))
+                return
+            }
+            if resp.statusCode == 404 {
+                let error = CocoaError(.fileNoSuchFile, userInfo: [NSURLErrorKey: downloadTask.originalRequest?.url ?? location])
+                finish(with: .failure(error))
+                return
+            }
+        }
+        let tempDestination = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".tmp")
+        do {
+            try FileManager.default.moveItem(at: location, to: tempDestination)
+            finish(with: .success(tempDestination))
+        } catch {
+            finish(with: .failure(error))
+        }
+    }
+    
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error {
+            session.invalidateAndCancel()
+            finish(with: .failure(error))
+        }
+    }
+    
+    private func finish(with result: Result<URL, Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !hasResumed else { return }
+        hasResumed = true
+        continuation?(result)
+        continuation = nil
     }
 }

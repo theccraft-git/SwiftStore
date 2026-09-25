@@ -7,7 +7,6 @@
 //
 
 @preconcurrency import UIKit
-@preconcurrency import AltStoreCore
 
 class ErrorDetailsViewController: UIViewController
 {
@@ -34,12 +33,18 @@ class ErrorDetailsViewController: UIViewController
 
         self.navigationController?.navigationBar.tintColor = .altPrimary
 
-        if #available(iOS 15, *), let sheetController = self.navigationController?.sheetPresentationController
+        self.textView.isScrollEnabled = true
+        self.textView.alwaysBounceVertical = true
+        self.textView.showsVerticalScrollIndicator = true
+
+        #if !os(tvOS)
+        if let sheetController = self.navigationController?.sheetPresentationController
         {
             sheetController.detents = [.medium(), .large()]
             sheetController.selectedDetentIdentifier = .medium
             sheetController.prefersGrabberVisible = true
         }
+        #endif
     }
 
     override func viewDidLayoutSubviews()

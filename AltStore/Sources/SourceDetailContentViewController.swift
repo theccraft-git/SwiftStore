@@ -8,8 +8,6 @@
 
 @preconcurrency import UIKit
 import CoreData
-import SafariServices
-import AltStoreCore
 
 import Nuke
 
@@ -101,8 +99,10 @@ private extension SourceDetailContentViewController
             case .news:
                 guard !source.newsItems.isEmpty else { return nil }
                 
-                // Underestimate height to prevent jumping size abruptly.
-                let heightDimension: NSCollectionLayoutDimension = if #available(iOS 17, *) { .uniformAcrossSiblings(estimate: 50) } else { .estimated(50) }
+                // Estimate height closer to actual NewsCollectionViewCell height to prevent collapsed cards.
+                let heightDimension: NSCollectionLayoutDimension = if #available(iOS 17, tvOS 17, *) {
+                    .uniformAcrossSiblings(estimate: 160) } else { .estimated(160)
+                }
                 let itemSize = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1.0), heightDimension: heightDimension)
                 let item = NSCollectionLayoutItem(layoutSize: itemSize)
                 
@@ -164,18 +164,18 @@ private extension SourceDetailContentViewController
         return layout
     }
     
-    func makeDataSource() -> RSTCompositeCollectionViewPrefetchingDataSource<NSManagedObject, UIImage>
+    func makeDataSource() -> CompositeCollectionViewPrefetchingDataSource<NSManagedObject, UIImage>
     {
-        let dataSource = RSTCompositeCollectionViewPrefetchingDataSource<NSManagedObject, UIImage>(dataSources: [self.newsDataSource, self.appsDataSource, self.aboutDataSource])
+        let dataSource = CompositeCollectionViewPrefetchingDataSource<NSManagedObject, UIImage>(dataSources: [self.newsDataSource, self.appsDataSource, self.aboutDataSource])
         return dataSource
     }
     
-    func makeNewsDataSource() -> RSTFetchedResultsCollectionViewDataSource<NewsItem>
+    func makeNewsDataSource() -> FetchedResultsCollectionViewDataSource<NewsItem>
     {
         let fetchRequest = NewsItem.sortedFetchRequest(for: self.source)
         
         let context = self.source.managedObjectContext ?? DatabaseManager.shared.viewContext
-        let dataSource = RSTFetchedResultsCollectionViewDataSource(fetchRequest: fetchRequest, managedObjectContext: context)
+        let dataSource = FetchedResultsCollectionViewDataSource(fetchRequest: fetchRequest, managedObjectContext: context)
         dataSource.liveFetchLimit = 5
         dataSource.cellIdentifierHandler = { _ in "NewsCell" }
         dataSource.cellConfigurationHandler = { (cell, newsItem, indexPath) in
@@ -208,12 +208,12 @@ private extension SourceDetailContentViewController
         return dataSource
     }
     
-    func makeAppsDataSource() -> RSTArrayCollectionViewPrefetchingDataSource<StoreApp, UIImage>
+    func makeAppsDataSource() -> ArrayCollectionViewPrefetchingDataSource<StoreApp, UIImage>
     {
         let featuredApps = self.source.effectiveFeaturedApps
         let limitedFeaturedApps = Array(featuredApps.prefix(5))
         
-        let dataSource = RSTArrayCollectionViewPrefetchingDataSource<StoreApp, UIImage>(items: limitedFeaturedApps)
+        let dataSource = ArrayCollectionViewPrefetchingDataSource<StoreApp, UIImage>(items: limitedFeaturedApps)
         dataSource.cellIdentifierHandler = { _ in "AppCell" }
         dataSource.predicate = StoreApp.visibleAppsPredicate
         dataSource.cellConfigurationHandler = { [weak self] (cell, storeApp, indexPath) in
@@ -233,17 +233,8 @@ private extension SourceDetailContentViewController
             cell.bannerView.iconImageView.image = nil
             cell.bannerView.iconImageView.isIndicatingActivity = true
         }
-        dataSource.prefetchHandler = { (storeApp, indexPath, completion) in
-            let iconURL = storeApp.iconURL
-            return Task.detached(priority: .background) {
-                ImagePipeline.shared.loadImage(with: iconURL, progress: nil) { result in
-                    switch result
-                    {
-                    case .success(let response): completion(response.image, nil)
-                    case .failure(let error): completion(nil, error)
-                    }
-                }
-            }
+        dataSource.prefetchHandler = { (storeApp, indexPath) in
+            return try await ImagePipeline.shared.image(for: storeApp.iconURL)
         }
         dataSource.prefetchCompletionHandler = { [weak dataSource] (cell, image, indexPath, error) in
             let cell = cell as! AppBannerCollectionViewCell
@@ -260,9 +251,9 @@ private extension SourceDetailContentViewController
         return dataSource
     }
     
-    func makeAboutDataSource() -> RSTDynamicCollectionViewDataSource<NSManagedObject>
+    func makeAboutDataSource() -> DynamicCollectionViewDataSource<NSManagedObject>
     {
-        let dataSource = RSTDynamicCollectionViewDataSource<NSManagedObject>()
+        let dataSource = DynamicCollectionViewDataSource<NSManagedObject>()
         dataSource.numberOfSectionsHandler = { 1 }
         dataSource.numberOfItemsHandler = { [source] _ in source.localizedDescription == nil ? 0 : 1 }
         dataSource.cellIdentifierHandler = { _ in "AboutCell" }
@@ -351,9 +342,7 @@ extension SourceDetailContentViewController
         case (.news, let newsItem as NewsItem):
             if let externalURL = newsItem.externalURL
             {
-                let safariViewController = SFSafariViewController(url: externalURL)
-                safariViewController.preferredControlTintColor = newsItem.tintColor
-                self.present(safariViewController, animated: true, completion: nil)
+                self.openWebURL(externalURL, preferredTintColor: newsItem.tintColor)
             }
             else if let storeApp = newsItem.storeApp
             {
@@ -398,6 +387,15 @@ private extension SourceDetailContentViewController
     @MainActor
     func downloadApp(_ storeApp: StoreApp, sender: PillButton) async
     {
+        let confirmed = await withCheckedContinuation { continuation in
+            InstallAppDialog.present(storeApp: storeApp, from: self) {
+                continuation.resume(returning: true)
+            } onCancel: {
+                continuation.resume(returning: false)
+            }
+        }
+        guard confirmed else { return }
+        
         do
         {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -412,13 +410,11 @@ private extension SourceDetailContentViewController
                 }
                 else
                 {
-                    Task { @MainActor in
-                        let group = await AppManager.shared.installAsync(storeApp, presentingViewController: self) { result in
-                            continuation.resume(with: result.map { _ in () })
-                        }
-                        
-                        sender.progress = group.progress
+                    let group = AppManager.shared.install(.app(storeApp), presentingViewController: self) { result in
+                        continuation.resume(with: result.map { _ in () })
                     }
+                    
+                    sender.progress = group.progress
                 }
             }
         }

@@ -8,11 +8,10 @@
 
 import SwiftUI
 import Minimuxer
-import Darwin
 import Combine
 
 /*
- Minimuxer.shared.isReady Result Mapping to Core Requirements Statuses:
+ Minimuxer.shared().isReady Result Mapping to Core Requirements Statuses:
  
  | Ready Result Case                        | Network   | VPN       | IPSec     | Ping      | Pairing   | DDI       |
  | ---------------------------------------- | --------- | --------- | --------- | --------- | --------- | --------- |
@@ -89,24 +88,24 @@ final class HealthCheckViewModel: ObservableObject {
     }
 
     nonisolated private func fetchMetrics() async -> HealthCheckMetrics {
-        let mode = await Minimuxer.shared.getConnectionMode()
-        let wifi = Minimuxer.network.isWifiSatisfied
-        let wired = Minimuxer.network.isWiredSatisfied
-        let usb = Minimuxer.network.isUsbSatisfied
-        let bridge = Minimuxer.network.isBridgeSatisfied
-        let utun = Minimuxer.network.isUTunAvailable
-        let ipsec = Minimuxer.network.isIKEv2IPSecAvailable
+        let mode = await minimuxer.core.getConnectionMode()
+        let wifi = minimuxer.network.isWifiSatisfied
+        let wired = minimuxer.network.isWiredSatisfied
+        let usb = minimuxer.network.isUsbSatisfied
+        let bridge = minimuxer.network.isBridgeSatisfied
+        let utun = minimuxer.network.isUTunAvailable
+        let ipsec = minimuxer.network.isIKEv2IPSecAvailable
         
-        let tunnelIfaceIp = ConnectionConfig.shared.tunnelIfaceIp
+        let tunnelIfaceIp = ConnectionConfig.shared.formattedTunnelIface
         let tunnelIfaceSubnetMask = ConnectionConfig.shared.tunnelIfaceSubnetMask
-        let tunnelPeerIp = ConnectionConfig.shared.tunnelPeerIp
+        let tunnelPeerIp = ConnectionConfig.shared.formattedTunnelPeer
         let overrideTunnelPeerIp = ConnectionConfig.shared.overrideTunnelPeerIp
         let overrideTunnelPeerEffective = ConnectionConfig.shared.overrideTunnelPeerReachable
         let remoteServerIp = ConnectionConfig.shared.remoteServerIp
         let remotePeerIp = ConnectionConfig.shared.remotePeerIp
         let remoteReachable = ConnectionConfig.shared.remoteReachable
         
-        let pairingType = Minimuxer.shared.getPairingFileType()
+        let pairingType = minimuxer.core.pairingFileType
         let protocolStr: String
         switch pairingType {
         case .rppairing:
@@ -117,15 +116,15 @@ final class HealthCheckViewModel: ObservableObject {
             protocolStr = "Unknown"
         }
         
-        let targetIp = mode == .localVPN ? (overrideTunnelPeerEffective ? overrideTunnelPeerIp : (tunnelPeerIp ?? "")) : remoteServerIp
-        let pingSuccess = !targetIp.isEmpty && Minimuxer.shared.testDeviceConnection(ifaddr: targetIp)
+        let targetIp = mode == .localVPN ? (overrideTunnelPeerEffective ? overrideTunnelPeerIp : (ConnectionConfig.shared.tunnelPeerIp ?? "")) : remoteServerIp
+        let pingSuccess = !targetIp.isEmpty && minimuxer.core.testDeviceConnection(ifaddr: targetIp)
         
-        let ddi = (try? await Minimuxer.shared.isDDIMounted()) ?? false
-        let pairingVerified = (try? await Minimuxer.shared.fetchUDID() != nil) ?? false
-        let isRpPairing = Minimuxer.shared.isrppairing
-        let isPairingLoaded = Minimuxer.shared.isPairingFileLoaded
-        let readyResult = await Minimuxer.shared.isReady()
-        let scanned = self.scanLocalInterfaces()
+        let ddi = (try? await minimuxer.core.isDDIMounted()) ?? false
+        let pairingVerified = (try? await fetchUDID(forceLive: true)) != nil
+        let isRpPairing = minimuxer.core.pairingFileType == .rppairing
+        let isPairingLoaded = minimuxer.core.isPairingFileLoaded
+        let readyResult = await minimuxer.core.isReady(withDDIMountCheck: true)
+        let scanned = minimuxer.network.activeInterfaces
         
         return HealthCheckMetrics(
             connectionMode: mode,
@@ -145,12 +144,43 @@ final class HealthCheckViewModel: ObservableObject {
         let initialStatus = self.computeStatuses(initialMetrics)
         self.updateUI(metrics: initialMetrics, status: initialStatus)
         
-        // Listen to subsequent updates reactively
-        for await _ in minimuxerStatusPublisher.values {
-            guard !Task.isCancelled else { break }
-            let metrics = await self.fetchMetrics()
-            let status = self.computeStatuses(metrics)
-            self.updateUI(metrics: metrics, status: status)
+        await withTaskGroup(of: Void.self) { group in
+            // Immediate Network & Interface Updates (Wi-Fi, interfaces, VPN tunnel presence)
+            group.addTask {
+                for await _ in minimuxer.network.pathPublisher.values {
+                    guard !Task.isCancelled else { break }
+                    await self.updateNetworkState()
+                }
+            }
+
+            // Minimuxer Readiness Updates (Ping, DDI mount, Pairing verification, Muxer status)
+            group.addTask {
+                for await _ in minimuxerStatusPublisher.values {
+                    guard !Task.isCancelled else { break }
+                    let metrics = await self.fetchMetrics()
+                    let status = self.computeStatuses(metrics)
+                    await self.updateUI(metrics: metrics, status: status)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func updateNetworkState() {
+        let network = minimuxer.network
+        self.isWifiSatisfied = network.isWifiSatisfied
+        self.isWiredSatisfied = network.isWiredSatisfied
+        self.isUsbSatisfied = network.isUsbSatisfied
+        self.isBridgeSatisfied = network.isBridgeSatisfied
+        self.isUTunAvailable = network.isUTunAvailable
+        self.isIKEv2IPSecAvailable = network.isIKEv2IPSecAvailable
+        self.availableInterfaces = network.activeInterfaces
+        self.networkSatisfied = network.isWifiSatisfied
+        if self.connectionMode == .localVPN {
+            self.vpnSatisfied = network.isUTunAvailable
+            if !self.isRPPairing {
+                self.ipsecSatisfied = network.isIKEv2IPSecAvailable
+            }
         }
     }
     
@@ -174,14 +204,14 @@ final class HealthCheckViewModel: ObservableObject {
         switch m.readyResult {
         case .success:
             let pingSat = m.pingSuccess
-            let isPairingLoaded = Minimuxer.shared.isPairingFileLoaded
+            let isPairingLoaded = minimuxer.core.isPairingFileLoaded
             let pairingSat: Bool? = m.pairingVerified ? true : (isPairingLoaded ? nil : false)
             let ddiSat = m.ddi
             return (netSat, vpnSat, ipsecSat, pingSat, pairingSat, ddiSat)
 
         case .failure(let error):
             var pingSat: Bool? = m.pingSuccess
-            let isPairingLoaded = Minimuxer.shared.isPairingFileLoaded
+            let isPairingLoaded = minimuxer.core.isPairingFileLoaded
             var pairingSat: Bool? = m.pairingVerified ? true : (isPairingLoaded ? nil : false)
             var ddiSat: Bool? = m.ddi
 
@@ -247,61 +277,5 @@ final class HealthCheckViewModel: ObservableObject {
         
         self.minimuxerReadyResult = metrics.readyResult
         self.availableInterfaces = metrics.scanned
-    }
-
-    
-    nonisolated private func scanLocalInterfaces() -> [LocalInterfaceInfo] {
-        var interfaces = [LocalInterfaceInfo]()
-        var head: UnsafeMutablePointer<ifaddrs>? = nil
-        guard getifaddrs(&head) == 0, let first = head else { return [] }
-        defer { freeifaddrs(head) }
-        
-        var cur: UnsafeMutablePointer<ifaddrs>? = first
-        while let p = cur {
-            let e = p.pointee
-            let flags = Int32(e.ifa_flags)
-            
-            let ipv4 = e.ifa_addr?.pointee.sa_family == UInt8(AF_INET)
-            let active = (flags & (IFF_UP | IFF_RUNNING | IFF_LOOPBACK)) == (IFF_UP | IFF_RUNNING)
-            
-            if ipv4 && active {
-                if let name = String(utf8String: e.ifa_name),
-                   let addr = e.ifa_addr,
-                   let mask = e.ifa_netmask {
-                    
-                    var hostBuf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                    var maskBuf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                    
-                    if getnameinfo(addr, socklen_t(addr.pointee.sa_len), &hostBuf, socklen_t(hostBuf.count), nil, 0, NI_NUMERICHOST) == 0,
-                       getnameinfo(mask, socklen_t(mask.pointee.sa_len), &maskBuf, socklen_t(maskBuf.count), nil, 0, NI_NUMERICHOST) == 0 {
-                        
-                        let ipStr = String(cString: hostBuf)
-                        let maskStr = String(cString: maskBuf)
-                        
-                        let type: String
-                        if name.hasPrefix("utun") {
-                            type = "VPN (uTun)"
-                        } else if name.hasPrefix("ipsec") {
-                            type = "VPN (IPSec)"
-                        } else if name.hasPrefix("en") {
-                            type = "Wi-Fi / Ethernet"
-                        } else if name.hasPrefix("pdp") {
-                            type = "Cellular"
-                        } else if name.hasPrefix("lo") {
-                            type = "Loopback"
-                        } else if name.hasPrefix("bridge") || name.hasPrefix("ap") {
-                            type = "Bridge"
-                        } else {
-                            type = "Other"
-                        }
-                        
-                        interfaces.append(LocalInterfaceInfo(name: name, ip: ipStr, subnet: maskStr, type: type))
-                    }
-                }
-            }
-            cur = e.ifa_next
-        }
-        
-        return interfaces.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
     }
 }

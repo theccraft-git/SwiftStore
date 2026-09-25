@@ -1,6 +1,5 @@
 import SwiftUI
 import UniformTypeIdentifiers
-import AltStoreCore
 
 private extension Color {
     static let settingsRowBackground = Color.white.opacity(0.15)
@@ -20,6 +19,7 @@ struct BackupAndRestoreView: View {
     @State private var alertTitle = ""
     @State private var alertMessage = ""
     @State private var showingMessageAlert = false
+    @State private var exportFileURL: URL? = nil
 
     var body: some View {
         ScrollView {
@@ -70,6 +70,7 @@ struct BackupAndRestoreView: View {
                     .cornerRadius(14)
                 }
                 
+                #if DEBUG
                 // Section 2: Sources Data
                 VStack(alignment: .leading, spacing: 8) {
                     Text("SOURCES DATA")
@@ -115,6 +116,7 @@ struct BackupAndRestoreView: View {
                     .background(Color.settingsRowBackground)
                     .cornerRadius(14)
                 }
+                #endif
             }
             .padding(.horizontal, 16)
             .padding(.top, 16)
@@ -122,7 +124,9 @@ struct BackupAndRestoreView: View {
         }
         .background(Color(uiColor: .settingsBackground).ignoresSafeArea())
         .navigationTitle("Backup & Restore")
+        #if !os(tvOS)
         .navigationBarTitleDisplayMode(.large)
+        #endif
         .sheet(isPresented: $showingImportFilePicker) {
             DocumentPickerView(contentTypes: [UTType(filenameExtension: "sideconf") ?? .data]) { url in
                 guard let url = url else { return }
@@ -165,6 +169,14 @@ struct BackupAndRestoreView: View {
         } message: {
             Text(alertMessage)
         }
+        .sheet(isPresented: Binding<Bool>(
+            get: { exportFileURL != nil },
+            set: { if !$0 { exportFileURL = nil } }
+        )) {
+            if let url = exportFileURL {
+                ActivityViewController(activityItems: [url])
+            }
+        }
     }
     
     private var divider: some View {
@@ -197,14 +209,15 @@ struct BackupAndRestoreView: View {
             
             do {
                 let encryptedData = try ImportExport.exportAccount(password: filePassword, includeApplePassword: includeApplePassword)
-                guard let email = AuthManager.shared.currentAppleID else { return }
+                guard AuthManager.shared.currentAppleID != nil else { return }
                 
                 let tempDir = FileManager.default.temporaryDirectory
-                let fileURL = tempDir.appendingPathComponent("\(email).sideconf")
+                let fileURL = tempDir.appendingPathComponent(AppConstants.accountConfigurationFileName)
                 try encryptedData.write(to: fileURL)
                 
-                let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
-                top.present(activityVC, animated: true)
+                DispatchQueue.main.async {
+                    self.exportFileURL = fileURL
+                }
             } catch {
                 showAlert(title: "Export Error", message: error.localizedDescription)
             }
@@ -220,18 +233,20 @@ struct BackupAndRestoreView: View {
     
     private func performImportDecrypt() {
         guard let data = importedData, !importFilePassword.isEmpty else { return }
-        do {
-            let account = try ImportExport.importAccountData(data, filePassword: importFilePassword)
-            self.importedAccount = account
-            
-            if let pass = account.password, !pass.isEmpty {
-                showAlert(title: "Account Imported", message: "Account \(account.email) imported successfully!")
-            } else {
-                self.applePasswordInput = ""
-                self.showingApplePasswordAlert = true
+        Task { @MainActor in
+            do {
+                let account = try await ImportExport.importAccount(data, filePassword: importFilePassword)
+                self.importedAccount = account
+                
+                if let pass = account.password, !pass.isEmpty {
+                    showAlert(title: "Account Imported", message: "Account \(account.email) imported successfully!")
+                } else {
+                    self.applePasswordInput = ""
+                    self.showingApplePasswordAlert = true
+                }
+            } catch {
+                showAlert(title: "Import Error", message: error.localizedDescription)
             }
-        } catch {
-            showAlert(title: "Import Error", message: error.localizedDescription)
         }
     }
     
@@ -248,6 +263,7 @@ struct BackupAndRestoreView: View {
     }
 }
 
+#if !os(tvOS)
 struct DocumentPickerView: UIViewControllerRepresentable {
     let contentTypes: [UTType]
     let onPick: (URL?) -> Void
@@ -277,3 +293,25 @@ struct DocumentPickerView: UIViewControllerRepresentable {
         }
     }
 }
+#else
+struct DocumentPickerView: UIViewControllerRepresentable {
+    let contentTypes: [UTType]
+    let onPick: (URL?) -> Void
+    
+    func makeUIViewController(context: Context) -> UIViewController {
+        let vc = UIViewController()
+        DispatchQueue.main.async {
+            TVWebFileTransferManager.shared.startImport(
+                contentTypes: contentTypes,
+                title: "Import File",
+                presentingVC: vc
+            ) { url in
+                onPick(url)
+            }
+        }
+        return vc
+    }
+    
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
+}
+#endif

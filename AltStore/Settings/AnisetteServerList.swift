@@ -8,13 +8,30 @@
 
 @preconcurrency import UIKit
 import SwiftUI
-@preconcurrency import AltStoreCore
+import SideSign
 
-typealias SUIButton = SwiftUI.Button
+private typealias SUIButton = SwiftUI.Button
 
 // MARK: - AnisetteServerData
 struct AnisetteServerData: Codable {
     let servers: [Server]
+    let oda: ODAValue?
+
+    enum CodingKeys: String, CodingKey {
+        case servers
+        case oda
+    }
+
+    init(servers: [Server], oda: ODAValue? = nil) {
+        self.servers = servers
+        self.oda = oda
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.servers = (try? container.decode([Server].self, forKey: .servers)) ?? []
+        self.oda = try? container.decodeIfPresent(ODAValue.self, forKey: .oda)
+    }
 }
 
 // MARK: - Server
@@ -114,17 +131,17 @@ final class AnisetteViewModel: ObservableObject {
     }
 
     @MainActor
-    func importFile(url: URL) async {
+    func importData(_ data: Data, filename: String) async {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
 
         do {
-            let imported = try await AnisetteServersManager.shared.importFromFile(url: url)
+            let imported = try await AnisetteServersManager.shared.importFromData(data: data, filename: filename)
             self.items = imported
             self.isOfflineMode = true
-            self.importedFileName = url.lastPathComponent
-            debugLog("AnisetteViewModel: Imported servers from file: \(url.lastPathComponent)")
+            self.importedFileName = filename
+            debugLog("AnisetteViewModel: Imported servers from data: \(filename)")
         } catch {
             self.errorMessage = "Failed to import file: \(error.localizedDescription)"
             debugLog("AnisetteViewModel: Import error: \(error)")
@@ -221,7 +238,6 @@ struct AnisetteServersView: View {
     @Environment(\.presentationMode) var presentationMode
     @StateObject private var viewModel = AnisetteViewModel()
     @State private var selectedServerURL: String = ""
-    @State private var showingResetAlert = false
     @State private var showingFileImporter = false
     @State private var showingShareSheet = false
     @State private var exportFileURL: URL? = nil
@@ -229,7 +245,11 @@ struct AnisetteServersView: View {
     @State private var editingURLText: String = ""
     @State private var showingClearAlert = false
     @State private var showingImportAlert = false
-    @State private var pendingImportURL: URL? = nil
+    @State private var pendingImportData: Data? = nil
+    @State private var pendingImportName: String? = nil
+    #if os(tvOS)
+    @State private var showingTvOptionsMenu = false
+    #endif
 
     var selected: String?
     var onResetAdiPb: (() -> Void)?
@@ -352,6 +372,7 @@ struct AnisetteServersView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(PlainButtonStyle())
+                        #if !os(tvOS)
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             SwiftUI.Button {
                                 viewModel.toggleHide(item: item)
@@ -360,6 +381,7 @@ struct AnisetteServersView: View {
                             }
                             .tint(item.isHidden ? .blue : .orange)
                         }
+                        #endif
                     }
                     .onMove(perform: viewModel.moveItems)
                 }
@@ -521,9 +543,6 @@ struct AnisetteServersView: View {
 
                     // Section: Customization
                     Section {
-                        NavigationLink(destination: AnisetteDataView()) {
-                            Label("Anisette Client Configuration", systemImage: "macbook.and.iphone")
-                        }
                         Toggle(isOn: Binding(
                             get: { !UserDefaults.standard.disableAnisetteRotation },
                             set: { UserDefaults.standard.disableAnisetteRotation = !$0 }
@@ -533,42 +552,7 @@ struct AnisetteServersView: View {
                     } header: {
                         Text("Customization")
                     } footer: {
-                        Text("View, edit, or offline the header properties sent to Apple during provisioning, and control if SideStore automatically rotates/retries servers upon failure.")
-                    }
-
-                    // Section 3: Troubleshooting
-                    Section {
-                        SwiftUI.Button(role: .destructive) {
-                            showingResetAlert = true
-                        } label: {
-                            HStack {
-                                Text("Reset adi.pb")
-                                Spacer()
-                                Image(systemName: "trash")
-                                    .font(.subheadline)
-                            }
-                        }
-                        .alert(isPresented: $showingResetAlert) {
-                            Alert(
-                                title: Text("Reset adi.pb"),
-                                message: Text("Are you sure you want to clear adi.pb from the Keychain? You will need to log back in to Apple ID in SideStore."),
-                                primaryButton: .destructive(Text("Reset")) {
-                                    #if !DEBUG
-                                    if AnisetteDataManager.shared.anisetteAdiBlob != nil {
-                                        AnisetteDataManager.shared.anisetteAdiBlob = nil
-                                    }
-                                    #endif
-                                    debugLog("Cleared adi.pb from keychain")
-                                    onResetAdiPb?()
-                                    presentationMode.wrappedValue.dismiss()
-                                },
-                                secondaryButton: .cancel()
-                            )
-                        }
-                    } header: {
-                        Text("Troubleshooting")
-                    } footer: {
-                        Text("Resetting local Anisette data forces a fresh provisioning flow if authentication is failing.")
+                        Text("Control if SideStore automatically rotates/retries servers upon failure.")
                     }
 
                     // Bottom spacing section
@@ -578,7 +562,11 @@ struct AnisetteServersView: View {
                             .listRowBackground(Color.clear)
                     }
                 }
+                #if !os(tvOS)
                 .listStyle(.insetGrouped)
+                #else
+                .listStyle(.grouped)
+                #endif
                 .refreshable {
                     await viewModel.fetchServers(forceRemote: true)
                 }
@@ -595,12 +583,32 @@ struct AnisetteServersView: View {
                     .tint(.red)
                 } else {
                     SwiftUI.Button {
+                        #if !os(tvOS)
                         showingFileImporter = true
+                        #else
+                        if let topVC = UIApplication.shared.topViewController() {
+                            TVWebFileTransferManager.shared.startImport(
+                                acceptedExtensions: ["json"],
+                                title: "Import Anisette Servers JSON",
+                                presentingVC: topVC
+                            ) { fileURL in
+                                guard let fileURL = fileURL else { return }
+                                if let data = try? Data(contentsOf: fileURL) {
+                                    DispatchQueue.main.async {
+                                        pendingImportData = data
+                                        pendingImportName = fileURL.lastPathComponent
+                                        showingImportAlert = true
+                                    }
+                                }
+                            }
+                        }
+                        #endif
                     } label: {
                         Image(systemName: "doc.badge.plus")
                     }
                 }
 
+                #if !os(tvOS)
                 Menu {
                     if viewModel.hasHiddenItems {
                         SwiftUI.Button {
@@ -644,8 +652,46 @@ struct AnisetteServersView: View {
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
+                #else
+                SwiftUI.Button {
+                    showingTvOptionsMenu = true
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                #endif
             }
         }
+        #if os(tvOS)
+        .confirmationDialog("Options", isPresented: $showingTvOptionsMenu) {
+            if viewModel.hasHiddenItems {
+                SwiftUI.Button(viewModel.showHiddenServers ? "Hide Hidden" : "Show Hidden") {
+                    viewModel.showHiddenServers.toggle()
+                }
+            }
+            SwiftUI.Button("Export Current") {
+                Task {
+                    if let url = await viewModel.exportCatalog(unmodified: false), let topVC = UIApplication.shared.topViewController() {
+                        TVWebFileTransferManager.shared.startExport(fileURL: url, title: "Export Anisette Servers JSON", presentingVC: topVC)
+                    }
+                }
+            }
+            if viewModel.isOfflineMode {
+                SwiftUI.Button("Export Original") {
+                    Task {
+                        if let url = await viewModel.exportCatalog(unmodified: true), let topVC = UIApplication.shared.topViewController() {
+                            TVWebFileTransferManager.shared.startExport(fileURL: url, title: "Export Anisette Servers JSON", presentingVC: topVC)
+                        }
+                    }
+                }
+            }
+            SwiftUI.Button("Reset Catalog", role: .destructive) {
+                Task {
+                    await viewModel.resetToOriginalState()
+                }
+            }
+        }
+        #endif
+        #if !os(tvOS)
         .fileImporter(
             isPresented: $showingFileImporter,
             allowedContentTypes: [.json],
@@ -654,13 +700,22 @@ struct AnisetteServersView: View {
             switch result {
             case .success(let urls):
                 if let url = urls.first {
-                    pendingImportURL = url
-                    showingImportAlert = true
+                    let isAccessing = url.startAccessingSecurityScopedResource()
+                    defer { if isAccessing { url.stopAccessingSecurityScopedResource() } }
+                    do {
+                        let data = try Data(contentsOf: url)
+                        pendingImportData = data
+                        pendingImportName = url.lastPathComponent
+                        showingImportAlert = true
+                    } catch {
+                        viewModel.errorMessage = "Failed to read file: \(error.localizedDescription)"
+                    }
                 }
             case .failure(let error):
-                debugLog("File import failed: \(error.localizedDescription)")
+                viewModel.errorMessage = "Import failed: \(error.localizedDescription)"
             }
         }
+        #endif
         .alert("Clear Imported File?", isPresented: $showingClearAlert) {
             SwiftUI.Button("Clear", role: .destructive) {
                 Task {
@@ -673,15 +728,15 @@ struct AnisetteServersView: View {
         }
         .alert("Import Server Catalog?", isPresented: $showingImportAlert) {
             SwiftUI.Button("Import") {
-                if let url = pendingImportURL {
+                if let data = pendingImportData, let name = pendingImportName {
                     Task {
-                        await viewModel.importFile(url: url)
+                        await viewModel.importData(data, filename: name)
                     }
                 }
             }
             SwiftUI.Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This will replace your current server catalog with the servers from '\(pendingImportURL?.lastPathComponent ?? "selected file")'. Do you want to proceed?")
+            Text("This will replace your current server catalog with the servers from '\(pendingImportName ?? "selected file")'. Do you want to proceed?")
         }
         .sheet(isPresented: $showingShareSheet) {
             if let fileURL = exportFileURL {

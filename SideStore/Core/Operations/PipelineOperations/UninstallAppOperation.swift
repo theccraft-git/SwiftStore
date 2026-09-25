@@ -8,20 +8,24 @@
 
 import Foundation
 import CoreData
-@preconcurrency import AltStoreCore
 
 final class UninstallAppOperation: BasePipelineOperation<InstallAppOperationContext, InstalledApp>, @unchecked Sendable {
     
     override func execute(parentProgress: Progress?) async throws -> InstalledApp {
+        let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[UninstallAppOperation] execute() started")
-        defer { debugLog("[UninstallAppOperation] execute() completed") }
+        defer {
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            debugLog("[UninstallAppOperation] execute() took: \(String(format: "%.3fs", elapsed))")
+        }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         guard let installedApp = self.context.installedApp else {
             throw OperationError.invalidParameters("UninstallAppOperation.main: self.context.installedApp is nil")
         }
         
+        
         let bundleID = await installedApp.managedObjectContext?.perform { installedApp.bundleIdentifier }
-        if bundleID == Bundle.main.bundleIdentifier || bundleID == StoreApp.altstoreAppID {
+        if bundleID?.isAltStoreAppID == true {
             throw OperationError.invalidParameters("SideStore cannot delete itself.")
         }
         
@@ -33,7 +37,14 @@ final class UninstallAppOperation: BasePipelineOperation<InstallAppOperationCont
         }
         
         // send uninstall payload to device
-        try await removeApp(resignedBundleIdentifier)
+        do {
+            await CellularRefreshManager.shared.turnOffDataIfNeeded()
+            try await removeApp(resignedBundleIdentifier)
+            await CellularRefreshManager.shared.turnOnDataIfNeeded()
+        } catch {
+            await CellularRefreshManager.shared.turnOnDataIfNeeded()
+            throw error
+        }
         
         self.setProgress(100)
         return installedApp

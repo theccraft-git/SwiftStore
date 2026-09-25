@@ -7,7 +7,6 @@
 //
 
 import SwiftUI
-import AltStoreCore
 
 private extension Color {
     static let settingsRowBackground = Color.white.opacity(0.15)
@@ -15,10 +14,7 @@ private extension Color {
 }
 
 struct ExperimentalFeaturesView: View {
-    @State private var freeAcctAppIdDeletion: Bool = UserDefaults.standard.freeAcctAppIdDeletion
-    @State private var isCellularRefreshEnabled: Bool = UserDefaults.standard.isCellularRefreshEnabled
-    @State private var permissionCheckingDisabled: Bool = UserDefaults.standard.permissionCheckingDisabled
-    @State private var appVerificationDisabled: Bool = UserDefaults.standard.appVerificationDisabled
+    @State private var isMinimuxerBackendHotswapEnabled: Bool = UserDefaults.standard.isMinimuxerBackendHotswapEnabled
 
     var body: some View {
         ScrollView {
@@ -66,50 +62,20 @@ struct ExperimentalFeaturesView: View {
                     .background(Color.settingsRowBackground)
                     .cornerRadius(14)
                 }
-                
-                // Section 2: FEATURE FLAGS
+
+                // Section 2: MINIMUXER
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("FEATURE FLAGS")
+                    Text("MINIMUXER")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(Color.white.opacity(0.6))
                         .padding(.horizontal, 16)
                     
                     VStack(spacing: 0) {
-                        toggleRow(title: "Free Account AppID Deletion", isOn: Binding(
-                            get: { freeAcctAppIdDeletion },
+                        toggleRow(title: "Enable Minimuxer Backend Hotswap", isOn: Binding(
+                            get: { isMinimuxerBackendHotswapEnabled },
                             set: { newValue in
-                                freeAcctAppIdDeletion = newValue
-                                UserDefaults.standard.freeAcctAppIdDeletion = newValue
-                            }
-                        ))
-                        
-                        divider
-                        
-                        toggleRow(title: "Cellular Refresh", isOn: Binding(
-                            get: { isCellularRefreshEnabled },
-                            set: { newValue in
-                                isCellularRefreshEnabled = newValue
-                                UserDefaults.standard.isCellularRefreshEnabled = newValue
-                            }
-                        ))
-                        
-                        divider
-                        
-                        toggleRow(title: "Permission Checks", isOn: Binding(
-                            get: { !permissionCheckingDisabled },
-                            set: { newValue in
-                                permissionCheckingDisabled = !newValue
-                                UserDefaults.standard.permissionCheckingDisabled = !newValue
-                            }
-                        ))
-                        
-                        divider
-                        
-                        toggleRow(title: "App Verification", isOn: Binding(
-                            get: { !appVerificationDisabled },
-                            set: { newValue in
-                                appVerificationDisabled = !newValue
-                                UserDefaults.standard.appVerificationDisabled = !newValue
+                                isMinimuxerBackendHotswapEnabled = newValue
+                                UserDefaults.standard.isMinimuxerBackendHotswapEnabled = newValue
                             }
                         ))
                     }
@@ -123,14 +89,9 @@ struct ExperimentalFeaturesView: View {
         }
         .background(Color(uiColor: .settingsBackground).ignoresSafeArea())
         .navigationTitle("Experimental Features")
+        #if !os(tvOS)
         .navigationBarTitleDisplayMode(.large)
-    }
-
-    private var divider: some View {
-        Rectangle()
-            .fill(Color.settingsDivider)
-            .frame(height: 1)
-            .padding(.leading, 16)
+        #endif
     }
 
     private func toggleRow(title: String, isOn: Binding<Bool>) -> some View {
@@ -147,5 +108,12 @@ struct ExperimentalFeaturesView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .frame(minHeight: 50)
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(Color.settingsDivider)
+            .frame(height: 1)
+            .padding(.leading, 16)
     }
 }

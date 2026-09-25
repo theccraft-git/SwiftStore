@@ -15,7 +15,7 @@ enum SideBackupError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .appGroupNotConfigured(let expected):
-            return "App Group is not configured. Bundle has no ALTAppGroups entry containing '\(expected)'. " +
+            return "App Group is not configured. Bundle has no AppGroups entitlement containing '\(expected)'. " +
                    "SideBackup was likely not resigned with the SideStore App Group entitlement."
         case .appGroupContainerUnresolvable(let group):
             return "Could not resolve container URL for App Group '\(group)'. " +
@@ -101,8 +101,7 @@ private func getTag(level: String) -> String {
     formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS"
     formatter.locale = Locale(identifier: "en_US_POSIX")
     let timestamp = formatter.string(from: Date())
-    let padding = level == "DEBUG" ? " " : "  "
-    return "\(timestamp) \(level)\(padding): "
+    return "\(timestamp) \(level): "
 }
 
 // Global print override to shadow Swift's standard print

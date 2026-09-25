@@ -7,7 +7,6 @@
 //
 
 import Foundation
-@preconcurrency import AltStoreCore
 
 public final class CacheManager {
     public static let shared = CacheManager()
@@ -17,11 +16,11 @@ public final class CacheManager {
     // MARK: - Directory Locations
     
     public var internalAppsDirectory: URL {
-        return InstalledApp.appsDirectoryURL
+        return InstalledApp.appsDirectoryURL.appendingPathComponent("Payloads")
     }
     
     public var resignedAppsDirectory: URL {
-        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let documentsURL = FileManager.default.documentsDirectory
         return documentsURL.appendingPathComponent("ResignedApps")
     }
     
@@ -29,10 +28,24 @@ public final class CacheManager {
     
     public func fetchInternalApps() -> [URL] {
         let fileManager = FileManager.default
-        guard let urls = try? fileManager.contentsOfDirectory(at: internalAppsDirectory, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else {
+        guard fileManager.fileExists(atPath: internalAppsDirectory.path) else {
             return []
         }
-        return urls.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false }
+        guard let shaDirectories = try? fileManager.contentsOfDirectory(
+            at: internalAppsDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        
+        return shaDirectories.filter { url in
+            guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+                return false
+            }
+            let appURL = url.appendingPathComponent("App.app")
+            return fileManager.fileExists(atPath: appURL.path)
+        }
     }
     
     public func fetchResignedApps() -> [URL] {
@@ -49,15 +62,13 @@ public final class CacheManager {
     // MARK: - Size Calculations & Formatting
     
     public func calculateSize(of url: URL) -> Int64 {
-        let fileManager = FileManager.default
-        var isDir: ObjCBool = false
-        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDir) else { return 0 }
+        guard let resourceValues = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey]) else { return 0 }
         
-        if !isDir.boolValue {
-            return (try? fileManager.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+        if resourceValues.isDirectory == true {
+            return getDirectorySize(at: url)
         }
         
-        return getDirectorySize(at: url)
+        return Int64(resourceValues.fileSize ?? 0)
     }
     
     public func calculateCacheSize() -> Int64 {

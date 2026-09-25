@@ -6,13 +6,14 @@
 //  Copyright © 2026 SideStore. All rights reserved.
 //
 
-@preconcurrency import AltSign
+import SideSign
 
 enum SortOption: String, CaseIterable, Identifiable {
     case creationDate = "Creation Date"
     case expiryDate   = "Expiry Date"
     case name         = "Name"
     case keys         = "Keys"
+    case type         = "Type"
     var id: String { rawValue }
 }
 
@@ -22,6 +23,7 @@ enum GroupOption: String, CaseIterable, Identifiable {
     case expiryDate   = "Expiry Date"
     case name         = "Name"
     case keys         = "Keys"
+    case type         = "Type"
     var id: String { rawValue }
 }
 
@@ -32,15 +34,11 @@ enum FileImportMode {
 
 struct KeyTextImportItem: Identifiable {
     let id: String
-    let cert: ALTCertificate
+    let cert: ALTX509Certificate
 }
 
 struct GroupedCertificates: Identifiable {
     var id: String { name }
     let name: String
-    let certificates: [ALTCertificate]
-}
-
-extension ALTCertificate: Identifiable {
-    public var id: String { serialNumber }
+    let certificates: [ALTX509Certificate]
 }

@@ -7,11 +7,10 @@
 //
 
 import Foundation
-@preconcurrency import AltStoreCore
 
 private extension URL
 {
-   static let sources = URL(string: "https://sidestore.io/trusted-sources")!
+   static let sources = AppConstants.Sources.defaultSourcesURL
 }
 
 extension UpdateKnownSourcesOperation
@@ -20,8 +19,14 @@ extension UpdateKnownSourcesOperation
     {
         var version: Int
         
-        var trusted: [KnownSource]?
+        var defaultSources: [KnownSource]?
         var blocked: [KnownSource]?
+
+        private enum CodingKeys: String, CodingKey {
+            case version
+            case defaultSources = "default"
+            case blocked
+        }
     }
 }
 
@@ -32,6 +37,7 @@ class UpdateKnownSourcesOperation: OperationLogging
     init()
     {
         let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = AppConstants.Sources.fetchTimeout
         
         if UserDefaults.standard.responseCachingDisabled
         {
@@ -44,8 +50,12 @@ class UpdateKnownSourcesOperation: OperationLogging
     
     func execute() async throws -> ([KnownSource], [KnownSource])
     {
+        let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[UpdateKnownSourcesOperation] execute() started")
-        defer { debugLog("[UpdateKnownSourcesOperation] execute() completed") }
+        defer {
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            debugLog("[UpdateKnownSourcesOperation] execute() took: \(String(format: "%.3fs", elapsed))")
+        }
         let (data, response) = try await self.session.data(from: .sources)
         
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 404 {
@@ -53,14 +63,14 @@ class UpdateKnownSourcesOperation: OperationLogging
         }
         
         let decoded = try Foundation.JSONDecoder().decode(Response.self, from: data)
-        let sources = (trusted: decoded.trusted ?? [], blocked: decoded.blocked ?? [])
+        let sources = (defaultSources: decoded.defaultSources ?? [], blocked: decoded.blocked ?? [])
         
         // Cache sources
-        UserDefaults.shared.recommendedSources = sources.trusted
-        UserDefaults.shared.blockedSources = sources.blocked
+        UserDefaults.standard.recommendedSources = sources.defaultSources
+        UserDefaults.standard.blockedSources = sources.blocked
         
-        // Cache trusted source IDs.
-        UserDefaults.shared.trustedSourceIDs = sources.trusted.map { $0.identifier }
+        // Cache default source IDs.
+        UserDefaults.standard.defaultSourceIDs = sources.defaultSources.map { $0.identifier }
         
         return sources
     }

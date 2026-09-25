@@ -7,16 +7,14 @@
 //
 
 import AppIntents
-import WidgetKit
-@preconcurrency import AltStoreCore
 
 // Shouldn't conform types we don't own to protocols we don't own, so make custom
 // NSError subclass that conforms to CustomLocalizedStringResourceConvertible instead.
 //
 // Would prefer to just conform ALTLocalizedError to CustomLocalizedStringResourceConvertible,
 // but that can't be done without raising minimum version for ALTLocalizedError to iOS 16 :/
-@available(iOS 16, *)
-class IntentError: NSError, CustomLocalizedStringResourceConvertible
+@available(iOS 16, tvOS 16, *)
+class IntentError: NSError, CustomLocalizedStringResourceConvertible, @unchecked Sendable
 {
     var localizedStringResource: LocalizedStringResource {
         return "\(self.localizedDescription)"
@@ -34,7 +32,7 @@ class IntentError: NSError, CustomLocalizedStringResourceConvertible
     }
 }
 
-@available(iOS 17.0, *)
+@available(iOS 17.0, tvOS 17.0, *)
 struct InstallIPAIntent: AppIntent, ProgressReportingIntent
 {
     static var title: LocalizedStringResource = "Install IPA"
@@ -58,7 +56,7 @@ struct InstallIPAIntent: AppIntent, ProgressReportingIntent
     {
         do
         {
-            try await Self.startDatabaseIfNeeded()
+            try await DatabaseManager.shared.start()
 
             let temporaryDirectory = FileManager.default.uniqueTemporaryURL()
             defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
@@ -69,8 +67,11 @@ struct InstallIPAIntent: AppIntent, ProgressReportingIntent
             try self.ipaFile.data.write(to: ipaURL)
 
             let intentProgress = self.progress
-            _ = try await AppManager.shared.installIPA(at: ipaURL) { progress in
-                intentProgress.addChild(progress, withPendingUnitCount: 1)
+            _ = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<InstalledApp, Error>) in
+                let group = AppManager.shared.install(.url(ipaURL)) { result in
+                    continuation.resume(with: result)
+                }
+                intentProgress.addChild(group.progress, withPendingUnitCount: 1)
             }
 
             return .result()
@@ -83,30 +84,8 @@ struct InstallIPAIntent: AppIntent, ProgressReportingIntent
     }
 }
 
-@available(iOS 17.0, *)
-fileprivate extension InstallIPAIntent
-{
-    static func startDatabaseIfNeeded() async throws
-    {
-        if !DatabaseManager.shared.isStarted
-        {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                DatabaseManager.shared.start { error in
-                    if let error
-                    {
-                        continuation.resume(throwing: error)
-                    }
-                    else
-                    {
-                        continuation.resume()
-                    }
-                }
-            }
-        }
-    }
-}
 
-@available(iOS 17.0, *)
+@available(iOS 17.0, tvOS 17.0, *)
 extension RefreshAllAppsIntent
 {
     private actor OperationActor
@@ -120,7 +99,7 @@ extension RefreshAllAppsIntent
     }
 }
 
-@available(iOS 17.0, *)
+@available(iOS 17.0, tvOS 17.0, *)
 struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, PredictableIntent, ProgressReportingIntent, ForegroundContinuableIntent
 {
     static let intentClassName = "RefreshAllIntent"
@@ -205,12 +184,12 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
     }
 }
 
-@available(iOS 17.0, *)
+@available(iOS 17.0, tvOS 17.0, *)
 private extension RefreshAllAppsIntent
 {
     func refreshAllApps() async throws
     {
-        try await InstallIPAIntent.startDatabaseIfNeeded()
+        try await DatabaseManager.shared.start()
         
         let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
         let installedApps = await context.perform { InstalledApp.fetchAppsForRefreshingAll(in: context) }
@@ -229,7 +208,7 @@ private extension RefreshAllAppsIntent
                     
                     continuation.resume()
                 }
-                catch ~RefreshErrorCode.noInstalledApps
+                catch OperationError.noInstalledApps
                 {
                     continuation.resume()
                 }

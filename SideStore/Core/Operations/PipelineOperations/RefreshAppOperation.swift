@@ -8,34 +8,56 @@
 
 import Foundation
 import CoreData
-@preconcurrency import AltStoreCore
-@preconcurrency import AltSign
+import SideSign
 
 final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContext, InstalledApp>, @unchecked Sendable {
     
     override func execute(parentProgress: Progress?) async throws -> InstalledApp {
+        let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[RefreshAppOperation] execute() started")
-        defer { debugLog("[RefreshAppOperation] execute() completed") }
+        defer {
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            debugLog("[RefreshAppOperation] execute() took: \(String(format: "%.3fs", elapsed))")
+        }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         
         guard let profiles = self.context.provisioningProfiles else {
             throw OperationError.invalidParameters("RefreshAppOperation.execute: self.context.provisioningProfiles is nil")
         }
         
-        guard let appBundle = self.context.targetAppBundle else { throw OperationError(.appNotFound(name: nil)) }
+        guard let appBundle = self.context.targetAppBundle else {
+            throw OperationError.invalidParameters("RefreshAppOperation: context.targetAppBundle is nil")
+        }
         self.setProgress(10)
-        for p in profiles {
-            do {
-                try await installProvisioningProfiles(p.value.data)
-            } catch {
-                throw MinimuxerWrapperError.profileInstall
+        
+        if self.context.isCellularRefreshGroup {
+            debugLog("[RefreshAppOperation] Queueing \(self.context.bundleIdentifier) into batch profile injection (isCellularRefreshGroup = true)")
+            self.context.sharedContext.addPendingProfileBatch(PendingProfileBatch(
+                bundleID: self.context.bundleIdentifier,
+                profiles: profiles.values.map { $0.data },
+                app: self.context.installedApp,
+                certStatus: self.context.targetCertStatus
+            ))
+            self.setProgress(85)
+            guard let app = self.context.installedApp else {
+                throw OperationError.invalidParameters("RefreshAppOperation: context.installedApp is nil")
             }
+            return app
+        }
+        
+        do {
+            await CellularRefreshManager.shared.turnOffDataIfNeeded()
+            for p in profiles {
+                try await installProvisioningProfiles(p.value.data)
+            }
+            await CellularRefreshManager.shared.turnOnDataIfNeeded()
+        } catch {
+            await CellularRefreshManager.shared.turnOnDataIfNeeded()
+            throw error
         }
         
         self.setProgress(80)
-        guard let dbContext = self.context.dbBackgroundContext else {
-            throw OperationError.invalidParameters("RefreshAppOperation: context.dbBackgroundContext is nil")
-        }
+        let dbContext = self.context.dbBackgroundContext
         
         let installedApp = try await dbContext.perform {
             try self.updateInstalledApp(for: appBundle, profiles: profiles, in: dbContext)
@@ -50,7 +72,7 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
         
         guard let mainApp = self.context.installedApp,
               let installedApp = dbContext.object(with: mainApp.objectID) as? InstalledApp else {
-            throw OperationError(.appNotFound(name: appBundle.name))
+            throw OperationError.invalidParameters("Could not find installed database record for '\(appBundle.name)'")
         }
         installedApp.update(provisioningProfile: profiles.values.first!)
         

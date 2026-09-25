@@ -8,9 +8,7 @@
 
 @preconcurrency import UIKit
 import CoreData
-@preconcurrency import AltStoreCore
-
-import Nuke
+@preconcurrency import Nuke
 
 extension UIAction.Identifier
 {
@@ -61,7 +59,7 @@ class FeaturedViewController: UICollectionViewController
     private lazy var categoriesDataSource = self.makeCategoriesDataSource()
     private lazy var featuredAppsDataSource = self.makeFeaturedAppsDataSource()
     
-    private var searchController: RSTSearchController!
+    private var searchController: UISearchController!
     private var searchBrowseViewController: BrowseViewController!
     
     override func viewDidLoad()
@@ -95,20 +93,16 @@ class FeaturedViewController: UICollectionViewController
             return browseViewController
         }
         
-        self.searchController = RSTSearchController(searchResultsController: self.searchBrowseViewController)
-        self.searchController.searchableKeyPaths = [#keyPath(StoreApp.name),
-                                                    #keyPath(StoreApp.developerName),
-                                                    #keyPath(StoreApp.subtitle),
-                                                    #keyPath(StoreApp.bundleIdentifier)]
-        self.searchController.searchHandler = { [weak searchBrowseViewController] (searchValue, _) in
-            searchBrowseViewController?.searchPredicate = searchValue.predicate
-            return nil
-        }
+        self.searchController = UISearchController(searchResultsController: self.searchBrowseViewController)
+        self.searchController.searchResultsUpdater = self
+        self.searchController.obscuresBackgroundDuringPresentation = false
         
+        #if !os(tvOS)
         self.navigationItem.searchController = self.searchController
         self.navigationItem.hidesSearchBarWhenScrolling = true
         
         self.navigationItem.largeTitleDisplayMode = .always
+        #endif
     }
     
     override func viewDidAppear(_ animated: Bool) 
@@ -188,7 +182,7 @@ private extension FeaturedViewController
                 return layoutSection
                 
             case _ where section.isFeaturedAppsSection:
-                let itemHeight: NSCollectionLayoutDimension = if #available(iOS 17, *) { .uniformAcrossSiblings(estimate: 350) } else { .estimated(350) }
+                let itemHeight: NSCollectionLayoutDimension = if #available(iOS 17, tvOS 17, *) { .uniformAcrossSiblings(estimate: 350) } else { .estimated(350) }
                 let itemSize = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1.0), heightDimension: itemHeight)
                 let item = NSCollectionLayoutItem(layoutSize: itemSize)
                 
@@ -196,9 +190,10 @@ private extension FeaturedViewController
                 let group = NSCollectionLayoutGroup.vertical(layoutSize: groupSize, subitems: [item])
                 group.interItemSpacing = .fixed(spacing)
                 
-                let titleHeader = NSCollectionLayoutBoundarySupplementaryItem(layoutSize: titleSize, elementKind: ElementKind.sourceHeader.rawValue, alignment: .topLeading)
+                let sourceHeaderSize = NSCollectionLayoutSize(widthDimension: .estimated(100), heightDimension: .absolute(30))
+                let titleHeader = NSCollectionLayoutBoundarySupplementaryItem(layoutSize: sourceHeaderSize, elementKind: ElementKind.sourceHeader.rawValue, alignment: .topLeading)
                 
-                let buttonSize = NSCollectionLayoutSize(widthDimension: .estimated(44), heightDimension: .estimated(20))
+                let buttonSize = NSCollectionLayoutSize(widthDimension: .estimated(70), heightDimension: .absolute(30))
                 let buttonHeader = NSCollectionLayoutBoundarySupplementaryItem(layoutSize: buttonSize, elementKind: ElementKind.button.rawValue, alignment: .topTrailing)
                 
                 let layoutSection = NSCollectionLayoutSection(group: group)
@@ -216,18 +211,18 @@ private extension FeaturedViewController
         return layout
     }
     
-    func makeDataSource() -> RSTCompositeCollectionViewPrefetchingDataSource<StoreApp, UIImage>
+    func makeDataSource() -> CompositeCollectionViewPrefetchingDataSource<StoreApp, UIImage>
     {
-        let featuredHeaderDataSource = RSTDynamicCollectionViewDataSource<StoreApp>()
+        let featuredHeaderDataSource = DynamicCollectionViewDataSource<StoreApp>()
         featuredHeaderDataSource.numberOfSectionsHandler = { 1 }
         featuredHeaderDataSource.numberOfItemsHandler = { _ in 0 }
         
-        let dataSource = RSTCompositeCollectionViewPrefetchingDataSource<StoreApp, UIImage>(dataSources: [self.recentlyUpdatedDataSource, self.categoriesDataSource, featuredHeaderDataSource, self.featuredAppsDataSource])
+        let dataSource = CompositeCollectionViewPrefetchingDataSource<StoreApp, UIImage>(dataSources: [self.recentlyUpdatedDataSource, self.categoriesDataSource, featuredHeaderDataSource, self.featuredAppsDataSource])
         dataSource.predicate = StoreApp.visibleAppsPredicate // Ensure we never accidentally show hidden apps
         return dataSource
     }
     
-    func makeRecentlyUpdatedDataSource() -> RSTFetchedResultsCollectionViewPrefetchingDataSource<StoreApp, UIImage>
+    func makeRecentlyUpdatedDataSource() -> FetchedResultsCollectionViewPrefetchingDataSource<StoreApp, UIImage>
     {
         let fetchRequest = StoreApp.fetchRequest() as NSFetchRequest<StoreApp>
         fetchRequest.returnsObjectsAsFaults = false
@@ -238,7 +233,7 @@ private extension FeaturedViewController
             NSSortDescriptor(keyPath: \StoreApp.sourceIdentifier, ascending: true),
         ]
         
-        let dataSource = RSTFetchedResultsCollectionViewPrefetchingDataSource<StoreApp, UIImage>(fetchRequest: fetchRequest, managedObjectContext: DatabaseManager.shared.viewContext)
+        let dataSource = FetchedResultsCollectionViewPrefetchingDataSource<StoreApp, UIImage>(fetchRequest: fetchRequest, managedObjectContext: DatabaseManager.shared.viewContext)
         dataSource.cellIdentifierHandler = { _ in ReuseID.recent.rawValue }
         dataSource.liveFetchLimit = 10 // Show 10 most recently updated apps
         dataSource.cellConfigurationHandler = { cell, storeApp, indexPath in
@@ -260,17 +255,8 @@ private extension FeaturedViewController
             cell.bannerView.iconImageView.image = nil
             cell.bannerView.iconImageView.isIndicatingActivity = true
         }
-        dataSource.prefetchHandler = { (storeApp, indexPath, completion) in
-            let iconURL = storeApp.iconURL
-            return Task.detached(priority: .background) {
-                ImagePipeline.shared.loadImage(with: iconURL, progress: nil) { result in
-                    switch result
-                    {
-                    case .success(let response): completion(response.image, nil)
-                    case .failure(let error): completion(nil, error)
-                    }
-                }
-            }
+        dataSource.prefetchHandler = { (storeApp, indexPath) in
+            return try await ImagePipeline.shared.image(for: storeApp.iconURL)
         }
         dataSource.prefetchCompletionHandler = { [weak dataSource] (cell, image, indexPath, error) in
             let cell = cell as! AppBannerCollectionViewCell
@@ -287,7 +273,7 @@ private extension FeaturedViewController
         return dataSource
     }
     
-    func makeCategoriesDataSource() -> RSTCompositeCollectionViewDataSource<StoreApp>
+    func makeCategoriesDataSource() -> CompositeCollectionViewDataSource<StoreApp>
     {
         let knownCategories = StoreCategory.allCases.filter { $0 != .other }.map { $0.rawValue }
         
@@ -304,15 +290,15 @@ private extension FeaturedViewController
                                                NSSortDescriptor(keyPath: \StoreApp.sourceIdentifier, ascending: true)]
         
         let knownController = NSFetchedResultsController(fetchRequest: knownFetchRequest, managedObjectContext: DatabaseManager.shared.viewContext, sectionNameKeyPath: #keyPath(StoreApp._category), cacheName: nil)
-        let knownDataSource = RSTFetchedResultsCollectionViewDataSource<StoreApp>(fetchedResultsController: knownController)
+        let knownDataSource = FetchedResultsCollectionViewDataSource<StoreApp>(fetchedResultsController: knownController)
         knownDataSource.liveFetchLimit = 1 // One app per category
         
         let unknownController = NSFetchedResultsController(fetchRequest: unknownFetchRequest, managedObjectContext: DatabaseManager.shared.viewContext, sectionNameKeyPath: nil, cacheName: nil)
-        let unknownDataSource = RSTFetchedResultsCollectionViewDataSource<StoreApp>(fetchedResultsController: unknownController)
+        let unknownDataSource = FetchedResultsCollectionViewDataSource<StoreApp>(fetchedResultsController: unknownController)
         unknownDataSource.liveFetchLimit = 1
         
         // Use composite data source to ensure "Other" category is always last.
-        let dataSource = RSTCompositeCollectionViewDataSource<StoreApp>(dataSources: [knownDataSource, unknownDataSource])
+        let dataSource = CompositeCollectionViewDataSource<StoreApp>(dataSources: [knownDataSource, unknownDataSource])
         dataSource.shouldFlattenSections = true // Combine into single section, with one StoreApp per category.
         dataSource.cellIdentifierHandler = { _ in ReuseID.category.rawValue }
         dataSource.cellConfigurationHandler = { cell, storeApp, indexPath in
@@ -331,7 +317,7 @@ private extension FeaturedViewController
         return dataSource
     }
     
-    func makeFeaturedAppsDataSource() -> RSTCompositeCollectionViewPrefetchingDataSource<StoreApp, UIImage>
+    func makeFeaturedAppsDataSource() -> CompositeCollectionViewPrefetchingDataSource<StoreApp, UIImage>
     {
         let fetchRequest = StoreApp.fetchRequest() as NSFetchRequest<StoreApp>
         fetchRequest.returnsObjectsAsFaults = false
@@ -372,18 +358,18 @@ private extension FeaturedViewController
         primaryFetchRequest.predicate = sourceHasRemainingAppsPredicate
         
         let primaryController = NSFetchedResultsController(fetchRequest: primaryFetchRequest, managedObjectContext: DatabaseManager.shared.viewContext, sectionNameKeyPath: #keyPath(StoreApp._source.featuredSortID), cacheName: nil)
-        let primaryDataSource = RSTFetchedResultsCollectionViewDataSource<StoreApp>(fetchedResultsController: primaryController)
+        let primaryDataSource = FetchedResultsCollectionViewDataSource<StoreApp>(fetchedResultsController: primaryController)
         primaryDataSource.liveFetchLimit = 5
         
         let secondaryFetchRequest = fetchRequest.copy() as! NSFetchRequest<StoreApp>
         secondaryFetchRequest.predicate = NSCompoundPredicate(notPredicateWithSubpredicate: sourceHasRemainingAppsPredicate)
         
         let secondaryController = NSFetchedResultsController(fetchRequest: secondaryFetchRequest, managedObjectContext: DatabaseManager.shared.viewContext, sectionNameKeyPath: #keyPath(StoreApp._source.featuredSortID), cacheName: nil)
-        let secondaryDataSource = RSTFetchedResultsCollectionViewDataSource<StoreApp>(fetchedResultsController: secondaryController)
+        let secondaryDataSource = FetchedResultsCollectionViewDataSource<StoreApp>(fetchedResultsController: secondaryController)
         secondaryDataSource.liveFetchLimit = 5
         
         // Ensure sources with no remaining apps always come last.
-        let dataSource = RSTCompositeCollectionViewPrefetchingDataSource<StoreApp, UIImage>(dataSources: [primaryDataSource, secondaryDataSource])
+        let dataSource = CompositeCollectionViewPrefetchingDataSource<StoreApp, UIImage>(dataSources: [primaryDataSource, secondaryDataSource])
         dataSource.cellIdentifierHandler = { _ in ReuseID.featuredApp.rawValue }
         dataSource.cellConfigurationHandler = { cell, storeApp, indexPath in
             let cell = cell as! AppCardCollectionViewCell
@@ -396,17 +382,13 @@ private extension FeaturedViewController
             cell.bannerView.iconImageView.image = nil
             cell.bannerView.iconImageView.isIndicatingActivity = true
         }
-        dataSource.prefetchHandler = { (storeApp, indexPath, completion) in
-            let iconURL = storeApp.iconURL
-            return Task.detached(priority: .background) {
-                ImagePipeline.shared.loadImage(with: iconURL, progress: nil) { result in
-                    switch result
-                    {
-                    case .success(let response): completion(response.image, nil)
-                    case .failure(let error): completion(nil, error)
-                    }
-                }
-            }
+        dataSource.prefetchHandler = { (storeApp, indexPath) in
+            let image = try await ImagePipeline.shared.image(for: storeApp.iconURL)
+            return await Task.detached(priority: .userInitiated) {
+                _ = image.isPredominantlyLight
+                _ = image.withDropShadow(color: .black, radius: 4, offset: CGSize(width: 0, height: 1.5), opacity: 0.25)
+                return image
+            }.value
         }
         dataSource.prefetchCompletionHandler = { [weak dataSource] (cell, image, indexPath, error) in
             let cell = cell as! AppCardCollectionViewCell
@@ -489,48 +471,51 @@ private extension FeaturedViewController
     
     func install(_ storeApp: StoreApp, at indexPath: IndexPath, progressUpdateHandler: @escaping (Progress) -> Void)
     {
-        let previousProgress = AppManager.shared.installationProgress(for: storeApp)
-        guard previousProgress == nil else {
-            previousProgress?.cancel()
-            return
-        }
-        
-        // if let installedApp = storeApp.installedApp, installedApp.isUpdateAvailable
-        if let installedApp = storeApp.installedApp, installedApp.hasUpdate
-        {
-            let progress = AppManager.shared.update(installedApp, presentingViewController: self, completionHandler: finish(_:))
-            progressUpdateHandler(progress)
-        }
-        else
-        {
-            let group = AppManager.shared.install(storeApp, presentingViewController: self, completionHandler: finish(_:))
-            progressUpdateHandler(group.progress)
-        }
-        
-        func finish(_ result: Result<InstalledApp, Error>)
-        {
-            DispatchQueue.main.async {
-                switch result
-                {
-                case .failure(let error) where error is CancellationError: break // Ignore
-                case .failure(let error):
-                    let toastView = ToastView(error: error)
-                    toastView.opensErrorLog = true
-                    toastView.show(in: self)
+        InstallAppDialog.present(storeApp: storeApp, from: self) { [weak self] in
+            guard let self else { return }
+            let previousProgress = AppManager.shared.installationProgress(for: storeApp)
+            guard previousProgress == nil else {
+                previousProgress?.cancel()
+                return
+            }
+            
+            // if let installedApp = storeApp.installedApp, installedApp.isUpdateAvailable
+            if let installedApp = storeApp.installedApp, installedApp.hasUpdate
+            {
+                let progress = AppManager.shared.update(installedApp, presentingViewController: self, completionHandler: finish(_:))
+                progressUpdateHandler(progress)
+            }
+            else
+            {
+                let group = AppManager.shared.install(.app(storeApp), presentingViewController: self, completionHandler: finish(_:))
+                progressUpdateHandler(group.progress)
+            }
+            
+            func finish(_ result: Result<InstalledApp, Error>)
+            {
+                DispatchQueue.main.async {
+                    switch result
+                    {
+                    case .failure(let error) where error is CancellationError: break // Ignore
+                    case .failure(let error):
+                        let toastView = ToastView(error: error)
+                        toastView.opensErrorLog = true
+                        toastView.show(in: self)
+                        
+                    case .success:
+                        debugLog("Installed app \(storeApp.bundleIdentifier) from FeaturedViewController.")
+                    }
                     
-                case .success:
-                    debugLog("Installed app \(storeApp.bundleIdentifier) from FeaturedViewController.")
-                }
-                
-                for indexPath in self.collectionView.indexPathsForVisibleItems
-                {
-                    // Only need to reload if it's still visible.
-                    
-                    let item = self.dataSource.item(at: indexPath)
-                    guard item == storeApp else { continue }
-                    
-                    UIView.performWithoutAnimation {
-                        self.collectionView.reloadItems(at: [indexPath])
+                    for indexPath in self.collectionView.indexPathsForVisibleItems
+                    {
+                        // Only need to reload if it's still visible.
+                        
+                        let item = self.dataSource.item(at: indexPath)
+                        guard item == storeApp else { continue }
+                        
+                        UIView.performWithoutAnimation {
+                            self.collectionView.reloadItems(at: [indexPath])
+                        }
                     }
                 }
             }
@@ -577,11 +562,10 @@ extension FeaturedViewController
             
             if let iconURL = storeApp.source?.effectiveIconURL
             {
-                ImagePipeline.shared.loadImage(with: iconURL) { result in
-                    guard case .success(let image) = result else { return }
-
-                    headerView.iconButton.backgroundColor = .white
-                    headerView.iconButton.setImage(image.image, for: .normal)
+                Task { [weak headerView] in
+                    guard let image = try? await ImagePipeline.shared.image(for: iconURL) else { return }
+                    headerView?.iconButton.backgroundColor = .white
+                    headerView?.iconButton.setImage(image, for: .normal)
                 }
             }
             
@@ -606,12 +590,11 @@ extension FeaturedViewController
             
             let headerView = collectionView.dequeueReusableSupplementaryView(ofKind: kind, withReuseIdentifier: kind, for: indexPath) as! UICollectionViewListCell
             
-            var content: UIListContentConfiguration = if #available(iOS 15, *) {
-                .prominentInsetGroupedHeader()
-            }
-            else {
-                .groupedHeader()
-            }
+            #if !os(tvOS)
+            var content: UIListContentConfiguration = .prominentInsetGroupedHeader()
+            #else
+            var content: UIListContentConfiguration = .groupedHeader()
+            #endif
             
             switch section
             {
@@ -636,8 +619,18 @@ extension FeaturedViewController
             buttonView.tintColor = storeApp.source?.effectiveTintColor?.adjustedForDisplay ?? .altPrimary
             
             buttonView.button.setTitle(NSLocalizedString("See All", comment: ""), for: .normal)
-            buttonView.button.titleLabel?.font = UIFont.preferredFont(forTextStyle: .body)
-            buttonView.button.contentEdgeInsets.bottom = 8
+            let font = UIFont.preferredFont(forTextStyle: .body)
+            var config = UIButton.Configuration.plain()
+            config.cornerStyle = .fixed
+            config.background.cornerRadius = 0
+            config.contentInsets = .zero
+            config.baseForegroundColor = buttonView.tintColor
+            config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+                var outgoing = incoming
+                outgoing.font = font
+                return outgoing
+            }
+            buttonView.button.configuration = config
             
             buttonView.button.removeAction(identifiedBy: .showAllApps, for: .primaryActionTriggered)
             
@@ -676,64 +669,17 @@ extension FeaturedViewController
     }
 }
 
-@available(iOS 17, *)
-#Preview(traits: .portrait) {
-    DatabaseManager.shared.startForPreview()
-    
-    let storyboard = UIStoryboard(name: "Main", bundle: nil)
-    let featuredViewController = storyboard.instantiateViewController(identifier: "featuredViewController")
-    
-    let navigationController = UINavigationController(rootViewController: featuredViewController)
-    navigationController.navigationBar.prefersLargeTitles = true
-    navigationController.modalPresentationStyle = .fullScreen
-    
-    let viewController = UIViewController()
-    
-    AppManager.shared.fetchSources() { (result) in
-        do
-        {
-            let (_, context) = try result.get()
-            try context.save()
-        }
-        catch let error as NSError
-        {
-            debugLog("Failed to fetch sources for preview. \(error.localizedDescription)")
-        }
+extension FeaturedViewController: UISearchResultsUpdating
+{
+    func updateSearchResults(for searchController: UISearchController)
+    {
+        let searchText = searchController.searchBar.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let searchableKeyPaths: Set<String> = [#keyPath(StoreApp.name),
+                                               #keyPath(StoreApp.developerName),
+                                               #keyPath(StoreApp.subtitle),
+                                               #keyPath(StoreApp.bundleIdentifier)]
+        let searchPredicate = NSPredicate.forSearching(forText: searchText, inValuesForKeyPaths: searchableKeyPaths)
+        self.searchBrowseViewController?.searchPredicate = searchPredicate
     }
-    
-    AppManager.shared.updateKnownSources { result in
-        Task {
-            do
-            {
-                let knownSources = try result.get()
-                
-                let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
-                
-                await withThrowingTaskGroup(of: Void.self) { taskGroup in
-                    for source in knownSources.0
-                    {
-                        guard let sourceURL = source.sourceURL else { continue }
-                        
-                        taskGroup.addTask {
-                            _ = try await AppManager.shared.fetchSource(sourceURL: sourceURL, managedObjectContext: context)
-                        }
-                    }
-                }
-                
-                await context.performAsync {
-                    try! context.save()
-                }
-                
-                await MainActor.run {
-                    viewController.present(navigationController, animated: true)
-                }
-            }
-            catch
-            {
-                debugLog("Failed to fetch known sources for preview. \(error.localizedDescription)")
-            }
-        }
-    }
-    
-    return viewController
 }
+

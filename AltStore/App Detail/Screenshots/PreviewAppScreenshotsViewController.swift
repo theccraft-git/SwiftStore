@@ -7,9 +7,7 @@
 //
 
 @preconcurrency import UIKit
-@preconcurrency import AltStoreCore
-
-import Nuke
+@preconcurrency import Nuke
 
 class PreviewAppScreenshotsViewController: UICollectionViewController
 {
@@ -37,7 +35,11 @@ class PreviewAppScreenshotsViewController: UICollectionViewController
         let tintColor = self.app.tintColor ?? .altPrimary
         self.navigationController?.view.tintColor = tintColor
         
+        #if !os(tvOS)
         self.view.backgroundColor = .systemBackground
+        #else
+        self.view.backgroundColor = .black
+        #endif
         self.collectionView.backgroundColor = nil
         
         let collectionViewLayout = self.makeLayout()
@@ -50,7 +52,7 @@ class PreviewAppScreenshotsViewController: UICollectionViewController
         self.collectionView.insetsLayoutMarginsFromSafeArea = true
         
         self.collectionView.alwaysBounceVertical = false
-        self.collectionView.register(AppScreenshotCollectionViewCell.self, forCellWithReuseIdentifier: RSTCellContentGenericCellIdentifier)
+        self.collectionView.register(AppScreenshotCollectionViewCell.self, forCellWithReuseIdentifier: CellContentGenericCellIdentifier)
         
         self.collectionView.dataSource = self.dataSource
         self.collectionView.prefetchDataSource = self.dataSource
@@ -107,15 +109,44 @@ private extension PreviewAppScreenshotsViewController
         return layout
     }
     
-    func makeDataSource() -> RSTArrayCollectionViewPrefetchingDataSource<AppScreenshot, UIImage>
+    func makeDataSource() -> ArrayCollectionViewPrefetchingDataSource<AppScreenshot, UIImage>
     {
         let screenshots = self.app.preferredScreenshots()
         
-        let dataSource = RSTArrayCollectionViewPrefetchingDataSource<AppScreenshot, UIImage>(items: screenshots)
+        let dataSource = ArrayCollectionViewPrefetchingDataSource<AppScreenshot, UIImage>(items: screenshots)
         dataSource.cellConfigurationHandler = { [weak self] (cell, screenshot, indexPath) in
             let cell = cell as! AppScreenshotCollectionViewCell
+            cell.imageView.image = nil
             cell.imageView.isIndicatingActivity = true
-            cell.setImage(nil)
+            cell.reloadImageView.isHidden = true
+            
+            cell.onRetry = { [weak cell] in
+                guard let cell = cell else { return }
+                cell.imageView.isIndicatingActivity = true
+                cell.reloadImageView.isHidden = true
+                
+                let imageURL = screenshot.imageURL
+                let request = ImageRequest(
+                    url: imageURL,
+                    processors: [ImageProcessors.Resize(size: CGSize(width: 250, height: 500))]
+                )
+                Task { [weak cell] in
+                    do
+                    {
+                        let image = try await ImagePipeline.shared.image(for: request)
+                        guard let cell else { return }
+                        cell.imageView.isIndicatingActivity = false
+                        cell.setImage(image)
+                    }
+                    catch
+                    {
+                        guard let cell else { return }
+                        cell.imageView.isIndicatingActivity = false
+                        cell.setImage(nil)
+                        cell.reloadImageView.isHidden = false
+                    }
+                }
+            }
             
             var aspectRatio = screenshot.size ?? AppScreenshot.defaultAspectRatio
             if aspectRatio.width > aspectRatio.height
@@ -136,19 +167,12 @@ private extension PreviewAppScreenshotsViewController
             
             cell.aspectRatio = aspectRatio
         }
-        dataSource.prefetchHandler = { (screenshot, indexPath, completionHandler) in
-            let imageURL = screenshot.imageURL
-            Task.detached(priority: .background) {
-                let request = ImageRequest(url: imageURL)
-                ImagePipeline.shared.loadImage(with: request, progress: nil) { result in
-                    switch result
-                    {
-                    case .success(let response): completionHandler(response.image, nil)
-                    case .failure(let error): completionHandler(nil, error)
-                    }
-                }
-            }
-            return nil
+        dataSource.prefetchHandler = { (screenshot, indexPath) in
+            let request = ImageRequest(
+                url: screenshot.imageURL,
+                processors: [ImageProcessors.Resize(size: CGSize(width: 250, height: 500))]
+            )
+            return try await ImagePipeline.shared.image(for: request)
         }
         dataSource.prefetchCompletionHandler = { (cell, image, indexPath, error) in
             let cell = cell as! AppScreenshotCollectionViewCell
@@ -157,7 +181,18 @@ private extension PreviewAppScreenshotsViewController
             
             if let error = error
             {
-                debugLog("Error loading image: \(error)")
+                debugLog("Error loading image at index \(indexPath.item): \(error.localizedDescription)")
+                cell.reloadImageView.isHidden = false
+            }
+            else if image == nil
+            {
+                debugLog("Loaded image is nil at index \(indexPath.item)")
+                cell.reloadImageView.isHidden = false
+            }
+            else
+            {
+                debugLog("Successfully loaded image at index \(indexPath.item) with size: \(image?.size ?? .zero)")
+                cell.reloadImageView.isHidden = true
             }
         }
         
@@ -173,15 +208,3 @@ private extension PreviewAppScreenshotsViewController
     }
 }
 
-@available(iOS 17, *)
-#Preview(traits: .portrait) {
-    DatabaseManager.shared.startForPreview()
-    
-    let fetchRequest = StoreApp.fetchRequest()
-    let storeApp = try! DatabaseManager.shared.viewContext.fetch(fetchRequest).first!
-    
-    let previewViewController = PreviewAppScreenshotsViewController(app: storeApp)
-    
-    let navigationController = UINavigationController(rootViewController: previewViewController)
-    return navigationController
-}

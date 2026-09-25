@@ -9,8 +9,7 @@
 @preconcurrency import UIKit
 import SwiftUI
 
-@preconcurrency import AltSign
-@preconcurrency import AltStoreCore
+import SideSign
 
 extension UIApplication
 {
@@ -100,7 +99,7 @@ class AltAppIconsViewController: UICollectionViewController
         self.collectionView.dataSource = self.dataSource
         self.dataSource.contentView = self.collectionView
         
-        self.collectionView.register(UICollectionViewListCell.self, forCellWithReuseIdentifier: RSTCellContentGenericCellIdentifier)
+        self.collectionView.register(UICollectionViewListCell.self, forCellWithReuseIdentifier: CellContentGenericCellIdentifier)
         self.collectionView.register(UICollectionViewListCell.self, forSupplementaryViewOfKind: UICollectionView.elementKindSectionHeader, withReuseIdentifier: UICollectionView.elementKindSectionHeader)
                 
         self.headerRegistration = UICollectionView.SupplementaryRegistration<UICollectionViewListCell>(elementKind: UICollectionView.elementKindSectionHeader) { (headerView, elementKind, indexPath) in
@@ -123,8 +122,12 @@ private extension AltAppIconsViewController
 {
     func makeLayout() -> UICollectionViewCompositionalLayout
     {
+        #if !os(tvOS)
         var configuration = UICollectionLayoutListConfiguration(appearance: .insetGrouped)
         configuration.showsSeparators = true
+        #else
+        var configuration = UICollectionLayoutListConfiguration(appearance: .grouped)
+        #endif
         configuration.backgroundColor = .clear
         configuration.headerMode = .supplementary
                 
@@ -132,14 +135,14 @@ private extension AltAppIconsViewController
         return layout
     }
     
-    func makeDataSource() -> RSTCompositeCollectionViewDataSource<AltIcon>
+    func makeDataSource() -> CompositeCollectionViewDataSource<AltIcon>
     {
         let dataSources = Section.allCases.compactMap { self.iconsBySection[$0] }.filter { !$0.isEmpty }.map { icons in
-            let dataSource = RSTArrayCollectionViewDataSource<AltIcon>(items: icons)
+            let dataSource = ArrayCollectionViewDataSource<AltIcon>(items: icons)
             return dataSource
         }
         
-        let dataSource = RSTCompositeCollectionViewDataSource<AltIcon>(dataSources: dataSources)
+        let dataSource = CompositeCollectionViewDataSource<AltIcon>(dataSources: dataSources)
         dataSource.cellConfigurationHandler = { [weak self] cell, icon, indexPath in
             let cell = cell as! UICollectionViewListCell
             
@@ -235,10 +238,3 @@ extension AltAppIconsViewController
     }
 }
 
-@available(iOS 17, *)
-#Preview(traits: .portrait) {
-    let altAppIconsViewController = AltAppIconsViewController(collectionViewLayout: UICollectionViewFlowLayout())
-    
-    let navigationController = UINavigationController(rootViewController: altAppIconsViewController)
-    return navigationController
-}

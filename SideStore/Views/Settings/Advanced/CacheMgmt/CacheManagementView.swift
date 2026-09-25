@@ -7,7 +7,6 @@
 //
 
 import SwiftUI
-@preconcurrency import AltStoreCore
 
 struct CacheManagementView: View {
     @StateObject private var viewModel = CacheViewModel()
@@ -29,7 +28,8 @@ struct CacheManagementView: View {
                         } else {
                             ForEach(viewModel.internalApps) { item in
                                 CacheItemRow(item: item, onExport: {
-                                    viewModel.activeExportURL = item.url
+                                    let appURL = item.url.appendingPathComponent("App.app")
+                                    viewModel.activeExportURL = FileManager.default.fileExists(atPath: appURL.path) ? appURL : item.url
                                 }, onDelete: {
                                     viewModel.itemToDelete = item
                                 })
@@ -64,7 +64,11 @@ struct CacheManagementView: View {
                         }
                     }
                 }
+                #if !os(tvOS)
                 .listStyle(InsetGroupedListStyle())
+                #else
+                .listStyle(GroupedListStyle())
+                #endif
             }
             
             if viewModel.isLoading && !(viewModel.internalApps.isEmpty && viewModel.resignedApps.isEmpty) {
@@ -73,7 +77,11 @@ struct CacheManagementView: View {
                 
                 ProgressView()
                     .padding()
+                    #if !os(tvOS)
                     .background(RoundedRectangle(cornerRadius: 10).fill(Color(.systemBackground)))
+                    #else
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.8)))
+                    #endif
                     .shadow(radius: 10)
             }
         }
@@ -134,7 +142,11 @@ struct CacheItemRow: View {
                     .frame(width: 40, height: 40)
                     .foregroundColor(.secondary)
                     .padding(4)
+                    #if !os(tvOS)
                     .background(Color(.systemGray6))
+                    #else
+                    .background(Color.gray.opacity(0.2))
+                    #endif
                     .cornerRadius(8)
             }
             
@@ -168,16 +180,4 @@ struct CacheItemRow: View {
             }
         }
     }
-}
-
-struct ActivityViewController: UIViewControllerRepresentable {
-    var activityItems: [Any]
-    var applicationActivities: [UIActivity]? = nil
-    
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        let controller = UIActivityViewController(activityItems: activityItems, applicationActivities: applicationActivities)
-        return controller
-    }
-    
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

@@ -7,8 +7,7 @@
 //
 
 import Foundation
-@preconcurrency import AltStoreCore
-@preconcurrency import AltSign
+import SideSign
 
 public enum CodeSignValidationReason: Error {
     /// The certificate used to sign the current installation has expired.
@@ -32,28 +31,31 @@ public enum CodeSignValidationReason: Error {
     /// SideStore was installed by an external tool (e.g., Xcode or AltStore) using a different certificate.
     case externalSigner
     
-    /// The current installation's provisioning profile is corrupt or contains no certificates.
-    case corruptProfile
+    /// The current installation's provisioning profile is missing or invalid.
+    case missingProfile
+    
+    /// Could not extract the leaf signing certificate from the app binary.
+    case missingCertificate
 }
 
 public struct CodeSignValidator {
     
     public static func validate(
         runningProfile: ALTProvisioningProfile?,
-        activeCertificates: [ALTCertificate],
-        signerCertificate: ALTCertificate,
+        portalCertificates: [ALTX509Certificate]?,
+        signerCertificate: ALTX509Certificate,
         signerTeam: ALTTeam
     ) -> Result<Void, CodeSignValidationReason> {
         
         guard let runningProfile = runningProfile else {
-            debugLog("[CodeSignValidator] Validation failed: corruptProfile (runningProfile is nil)")
-            return .failure(.corruptProfile)
+            debugLog("[CodeSignValidator] Validation failed: missingProfile (runningProfile is nil)")
+            return .failure(.missingProfile)
         }
         
-        let runningCert = CertificateManager.shared.getSigningCertificate(at: Bundle.main.bundleURL)
+        let runningCert = CertificateManager.shared.getSigningCertificate(at: Bundle.Info.activeBundleURL)
         guard let runningCert = runningCert else {
-            debugLog("[CodeSignValidator] Validation failed: corruptProfile (failed to parse runningCert from binary)")
-            return .failure(.corruptProfile)
+            debugLog("[CodeSignValidator] Validation failed: missingCertificate (failed to parse runningCert from binary)")
+            return .failure(.missingCertificate)
         }
         
         // 1. Expired Certificate / Profile
@@ -70,8 +72,10 @@ public struct CodeSignValidator {
         if runningTeamID != signerTeam.identifier {
             // Check if the Apple ID email matches.
             if let requesterEmail = runningCert.requesterEmail, !requesterEmail.isEmpty,
-               requesterEmail.lowercased() != signerTeam.account.appleID.lowercased() {
-                debugLog("[CodeSignValidator] Validation failed: differentAccount (running profile email '\(requesterEmail)' != active account Apple ID '\(signerTeam.account.appleID)')")
+                let activeAppleID = signerTeam.account?.appleID,
+                requesterEmail.lowercased() != activeAppleID.lowercased() 
+            {
+                debugLog("[CodeSignValidator] Validation failed: differentAccount (running profile email '\(requesterEmail)' != active account Apple ID '\(activeAppleID)')")
                 return .failure(.differentAccount)
             } else {
                 debugLog("[CodeSignValidator] Validation failed: differentTeam (running profile team '\(runningTeamID)' != active team '\(signerTeam.identifier)')")
@@ -79,15 +83,17 @@ public struct CodeSignValidator {
             }
         }
         
-        // 3. Revoked Certificate
-        let isRunningCertActive = activeCertificates.contains { $0.serialNumber == runningCert.serialNumber }
-        if !isRunningCertActive {
-            if signerTeam.type == .free {
-                debugLog("[CodeSignValidator] Validation failed: freeAccountLimitRevoked (certificate is no longer active on portal for free account)")
-                return .failure(.freeAccountLimitRevoked)
-            } else {
-                debugLog("[CodeSignValidator] Validation failed: revoked (certificate is no longer active on portal)")
-                return .failure(.revoked)
+        // 3. Revoked Certificate (Only checked if portal certificates were fetched)
+        if let portalCertificates = portalCertificates {
+            let isRunningCertActive = portalCertificates.contains { $0.serialNumber == runningCert.serialNumber }
+            if !isRunningCertActive {
+                if signerTeam.type == .free {
+                    debugLog("[CodeSignValidator] Validation failed: freeAccountLimitRevoked (certificate is no longer active on portal for free account)")
+                    return .failure(.freeAccountLimitRevoked)
+                } else {
+                    debugLog("[CodeSignValidator] Validation failed: revoked (certificate is no longer active on portal)")
+                    return .failure(.revoked)
+                }
             }
         }
         

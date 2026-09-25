@@ -7,7 +7,7 @@
 //
 
 import SwiftUI
-@preconcurrency import AltSign
+import SideSign
 
 // MARK: - Tree Node Model
 struct PlistNode: Identifiable {
@@ -18,12 +18,24 @@ struct PlistNode: Identifiable {
     let children: [PlistNode]?
     
     static func parse(key: String, value: Any) -> PlistNode {
-        if let dict = value as? [String: Any] {
+        if let dict = value as? [String: any Sendable] {
             let sortedChildren = dict.keys.sorted().map { parse(key: $0, value: dict[$0]!) }
             return PlistNode(key: key, value: nil, typeInfo: "Dictionary (\(dict.count) keys)", children: sortedChildren)
+        } else if let dict = value as? [String: Any] {
+            let sortedChildren = dict.keys.sorted().map { parse(key: $0, value: dict[$0]!) }
+            return PlistNode(key: key, value: nil, typeInfo: "Dictionary (\(dict.count) keys)", children: sortedChildren)
+        } else if let array = value as? [any Sendable] {
+            let children = array.enumerated().map { parse(key: "Index \($0)", value: $1) }
+            return PlistNode(key: key, value: nil, typeInfo: "Array (\(array.count) items)", children: children)
         } else if let array = value as? [Any] {
             let children = array.enumerated().map { parse(key: "Index \($0)", value: $1) }
             return PlistNode(key: key, value: nil, typeInfo: "Array (\(array.count) items)", children: children)
+        } else if let data = value as? Data {
+            let hex = data.map { String(format: "%02x", $0) }.joined()
+            return PlistNode(key: key, value: hex, typeInfo: "Data (\(data.count) bytes)", children: nil)
+        } else if let date = value as? Date {
+            let str = ISO8601DateFormatter().string(from: date)
+            return PlistNode(key: key, value: str, typeInfo: "Date", children: nil)
         } else {
             let typeStr: String
             if value is Bool {
@@ -50,13 +62,46 @@ enum InfoPlistMode: String, CaseIterable, Identifiable {
 
 // MARK: - Container View
 struct InfoPlistContainerView: View {
-    let plist: [String: Any]
+    let plist: [String: any Sendable]
+    var title: String = "Info.plist"
+    var plistURL: URL? = nil
     
-    @State private var selectedMode: InfoPlistMode = .semantic
+    @State private var selectedMode: InfoPlistMode
     
     // Parent level cache to persist raw output between tab switches
     @State private var xmlString: String = ""
     @State private var jsonString: String = ""
+    #if !os(tvOS)
+    @State private var showingShareSheet = false
+    #endif
+
+    init(plist: [String: any Sendable], title: String = "Info.plist", plistURL: URL? = nil) {
+        self.plist = plist
+        self.title = title
+        self.plistURL = plistURL
+        let parser = InfoPlistParser(dictionary: plist)
+        let hasAppMetadata = parser.displayName != nil ||
+            parser.bundleName != nil ||
+            parser.bundleIdentifier != nil ||
+            parser.rawDictionary["CFBundleShortVersionString"] != nil ||
+            parser.rawDictionary["CFBundleVersion"] != nil ||
+            parser.minimumOSVersion != nil
+        _selectedMode = State(initialValue: hasAppMetadata ? .semantic : .tree)
+    }
+    
+    private var shareURL: URL? {
+        if let plistURL = plistURL, FileManager.default.fileExists(atPath: plistURL.path) {
+            return plistURL
+        }
+        let sanitizedTitle = title.replacingOccurrences(of: " ", with: "_")
+                                   .replacingOccurrences(of: "(", with: "").replacingOccurrences(of: ")", with: "")
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(sanitizedTitle).plist")
+        if let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0) {
+            try? data.write(to: tempURL, options: .atomic)
+            return tempURL
+        }
+        return nil
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -67,7 +112,11 @@ struct InfoPlistContainerView: View {
             }
             .pickerStyle(.segmented)
             .padding()
+            #if !os(tvOS)
             .background(Color(.systemGroupedBackground))
+            #else
+            .background(Color.clear)
+            #endif
             
             Divider()
             
@@ -90,15 +139,31 @@ struct InfoPlistContainerView: View {
                 }
             }
         }
-        .navigationTitle("Info.plist")
+        .navigationTitle(title)
+        #if !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                SwiftUI.Button {
+                    showingShareSheet = true
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+            }
+        }
+        .sheet(isPresented: $showingShareSheet) {
+            if let url = shareURL {
+                ActivityViewController(items: [url])
+            }
+        }
+        #endif
         .interactiveDismissDisabled(true)
     }
 }
 
 // MARK: - Mode 1: Tree View
 struct InfoPlistTreeView: View {
-    let plist: [String: Any]
+    let plist: [String: any Sendable]
     
     @State private var searchQuery = ""
     
@@ -116,7 +181,11 @@ struct InfoPlistTreeView: View {
                 PlistNodeRow(node: node)
             }
         }
+        #if !os(tvOS)
         .listStyle(InsetGroupedListStyle())
+        #else
+        .listStyle(GroupedListStyle())
+        #endif
         .searchable(text: $searchQuery, prompt: "Search keys")
     }
     
@@ -142,6 +211,7 @@ struct PlistNodeRow: View {
     @State private var isCopied = false
     
     var body: some View {
+        #if !os(tvOS)
         if let children = node.children {
             DisclosureGroup {
                 ForEach(children) { child in
@@ -166,42 +236,39 @@ struct PlistNodeRow: View {
                 }
             }
         } else {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(node.key)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .bold()
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        Text(node.value ?? "N/A")
-                            .font(.subheadline)
-                            .foregroundColor(.primary)
-                            .multilineTextAlignment(.leading)
-                    }
+            leafRow
+        }
+        #else
+        if let children = node.children {
+            Section(header: Text("\(node.key) (\(node.typeInfo))")) {
+                ForEach(children) { child in
+                    PlistNodeRow(node: child)
                 }
-                Spacer()
-                
-                SwiftUI.Button {
-                    let textToCopy = node.value ?? ""
-                    UIPasteboard.general.string = textToCopy
-                    withAnimation {
-                        isCopied = true
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                        withAnimation {
-                            isCopied = false
-                        }
-                    }
-                } label: {
-                    Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-                        .font(.subheadline)
-                        .foregroundColor(isCopied ? .green : .accentColor)
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain)
             }
-            .contentShape(Rectangle())
-            .onTapGesture {
+        } else {
+            leafRow
+        }
+        #endif
+    }
+    
+    private var leafRow: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(node.key)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .bold()
+                ScrollView(.horizontal, showsIndicators: false) {
+                    Text(node.value ?? "N/A")
+                        .font(.subheadline)
+                        .foregroundColor(.primary)
+                        .multilineTextAlignment(.leading)
+                }
+            }
+            Spacer()
+            
+            #if !os(tvOS)
+            SwiftUI.Button {
                 let textToCopy = node.value ?? ""
                 UIPasteboard.general.string = textToCopy
                 withAnimation {
@@ -212,14 +279,36 @@ struct PlistNodeRow: View {
                         isCopied = false
                     }
                 }
+            } label: {
+                Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                    .font(.subheadline)
+                    .foregroundColor(isCopied ? .green : .accentColor)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            #endif
+        }
+        .contentShape(Rectangle())
+        #if !os(tvOS)
+        .onTapGesture {
+            let textToCopy = node.value ?? ""
+            UIPasteboard.general.string = textToCopy
+            withAnimation {
+                isCopied = true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                withAnimation {
+                    isCopied = false
+                }
             }
         }
+        #endif
     }
 }
 
 // MARK: - Mode 1.5: Raw XML View
 struct InfoPlistRawXMLView: View {
-    let plist: [String: Any]
+    let plist: [String: any Sendable]
     
     @State private var isCopied = false
     @State private var isWrapped = true
@@ -242,6 +331,7 @@ struct InfoPlistRawXMLView: View {
                     }
                     .buttonStyle(.bordered)
                     
+                    #if !os(tvOS)
                     SwiftUI.Button {
                         UIPasteboard.general.string = xmlString
                         withAnimation {
@@ -258,6 +348,7 @@ struct InfoPlistRawXMLView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(isCopied ? .green : .accentColor)
+                    #endif
                 }
                 .padding(.horizontal)
                 .padding(.top)
@@ -267,7 +358,11 @@ struct InfoPlistRawXMLView: View {
                         .font(.system(size: 11, design: .monospaced))
                         .padding()
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        #if !os(tvOS)
                         .background(Color(.secondarySystemBackground))
+                        #else
+                        .background(Color.white.opacity(0.1))
+                        #endif
                         .cornerRadius(8)
                         .padding(.horizontal)
                 } else {
@@ -275,7 +370,11 @@ struct InfoPlistRawXMLView: View {
                         Text(xmlString)
                             .font(.system(size: 11, design: .monospaced))
                             .padding()
+                            #if !os(tvOS)
                             .background(Color(.secondarySystemBackground))
+                            #else
+                            .background(Color.white.opacity(0.1))
+                            #endif
                             .cornerRadius(8)
                     }
                     .padding(.horizontal)
@@ -289,7 +388,7 @@ struct InfoPlistRawXMLView: View {
         }
     }
     
-    private func generateXMLString(from plist: [String: Any]) -> String {
+    private func generateXMLString(from plist: [String: any Sendable]) -> String {
         guard let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0),
               let string = String(data: data, encoding: .utf8) else {
             return ""
@@ -300,7 +399,7 @@ struct InfoPlistRawXMLView: View {
 
 // MARK: - Mode 2: Raw JSON View
 struct InfoPlistRawView: View {
-    let plist: [String: Any]
+    let plist: [String: any Sendable]
     
     @State private var isCopied = false
     @State private var isWrapped = true
@@ -323,6 +422,7 @@ struct InfoPlistRawView: View {
                     }
                     .buttonStyle(.bordered)
                     
+                    #if !os(tvOS)
                     SwiftUI.Button {
                         UIPasteboard.general.string = jsonString
                         withAnimation {
@@ -339,6 +439,7 @@ struct InfoPlistRawView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(isCopied ? .green : .accentColor)
+                    #endif
                 }
                 .padding(.horizontal)
                 .padding(.top)
@@ -348,7 +449,11 @@ struct InfoPlistRawView: View {
                         .font(.system(size: 11, design: .monospaced))
                         .padding()
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        #if !os(tvOS)
                         .background(Color(.secondarySystemBackground))
+                        #else
+                        .background(Color.white.opacity(0.1))
+                        #endif
                         .cornerRadius(8)
                         .padding(.horizontal)
                 } else {
@@ -356,7 +461,11 @@ struct InfoPlistRawView: View {
                         Text(jsonString)
                             .font(.system(size: 11, design: .monospaced))
                             .padding()
+                            #if !os(tvOS)
                             .background(Color(.secondarySystemBackground))
+                            #else
+                            .background(Color.white.opacity(0.1))
+                            #endif
                             .cornerRadius(8)
                     }
                     .padding(.horizontal)
@@ -370,8 +479,30 @@ struct InfoPlistRawView: View {
         }
     }
     
-    private func generateJSONString(from plist: [String: Any]) -> String {
-        guard let data = try? JSONSerialization.data(withJSONObject: plist, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
+    static func jsonSanitize(_ value: Any) -> Any {
+        if let data = value as? Data {
+            return data.base64EncodedString()
+        } else if let date = value as? Date {
+            return ISO8601DateFormatter().string(from: date)
+        } else if let dict = value as? [String: Any] {
+            var sanitized: [String: Any] = [:]
+            for (k, v) in dict {
+                sanitized[k] = jsonSanitize(v)
+            }
+            return sanitized
+        } else if let array = value as? [Any] {
+            return array.map { jsonSanitize($0) }
+        } else if value is String || value is NSNumber || value is Bool {
+            return value
+        } else {
+            return "\(value)"
+        }
+    }
+    
+    private func generateJSONString(from plist: [String: any Sendable]) -> String {
+        let sanitized = Self.jsonSanitize(plist)
+        guard JSONSerialization.isValidJSONObject(sanitized),
+              let data = try? JSONSerialization.data(withJSONObject: sanitized, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
               let string = String(data: data, encoding: .utf8) else {
             return "{}"
         }
@@ -381,69 +512,54 @@ struct InfoPlistRawView: View {
 
 // MARK: - Mode 3: Semantic View
 struct InfoPlistSemanticView: View {
-    let plist: [String: Any]
+    let plist: [String: any Sendable]
     
     @State private var searchQuery = ""
     
+    private var parser: InfoPlistParser {
+        InfoPlistParser(dictionary: plist)
+    }
+
     // Core App Metadata
     var appName: String {
-        return (plist["CFBundleDisplayName"] as? String) ?? (plist["CFBundleName"] as? String) ?? "N/A"
+        return parser.displayName ?? parser.bundleName ?? "N/A"
     }
     var bundleID: String {
-        return (plist["CFBundleIdentifier"] as? String) ?? "N/A"
+        return parser.bundleIdentifier ?? "N/A"
     }
     var version: String {
-        let short = plist["CFBundleShortVersionString"] as? String
-        let build = plist["CFBundleVersion"] as? String
-        if let short = short, let build = build {
-            return "\(short) (\(build))"
-        }
-        return short ?? build ?? "N/A"
+        return parser.displayVersion
     }
     var minOS: String {
-        return (plist["MinimumOSVersion"] as? String) ?? "N/A"
+        return parser.minimumOSVersion ?? "N/A"
     }
     
     // Categorized Groups
     var privacyPermissions: [String: String] {
-        var dict = [String: String]()
-        for key in plist.keys where key.hasPrefix("NS") && key.hasSuffix("UsageDescription") {
-            if let val = plist[key] as? String {
-                dict[key] = val
-            }
-        }
-        return dict
+        return parser.privacyPermissions
     }
     
     var customURLSchemes: [String] {
-        var schemes = [String]()
-        if let urlTypes = plist["CFBundleURLTypes"] as? [[String: Any]] {
-            for type in urlTypes {
-                if let typeSchemes = type["CFBundleURLSchemes"] as? [String] {
-                    schemes.append(contentsOf: typeSchemes)
-                }
-            }
-        }
-        return schemes
+        return parser.customURLSchemes
     }
     
     var backgroundModes: [String] {
-        return (plist["UIBackgroundModes"] as? [String]) ?? []
+        return parser.backgroundModes
     }
     
     var queriedSchemes: [String] {
-        return (plist["LSApplicationQueriesSchemes"] as? [String]) ?? []
+        return parser.queriedURLSchemes
     }
     
     // Custom/Uncategorized keys
-    var customKeys: [String: Any] {
+    var customKeys: [String: any Sendable] {
         let categorized: Set<String> = [
             "CFBundleDisplayName", "CFBundleName", "CFBundleIdentifier",
             "CFBundleShortVersionString", "CFBundleVersion", "MinimumOSVersion",
             "CFBundleURLTypes", "UIBackgroundModes", "LSApplicationQueriesSchemes"
         ]
         
-        var dict = [String: Any]()
+        var dict = [String: any Sendable]()
         for key in plist.keys {
             if categorized.contains(key) { continue }
             if key.hasPrefix("NS") && key.hasSuffix("UsageDescription") { continue }
@@ -460,14 +576,25 @@ struct InfoPlistSemanticView: View {
         return keys.filter { $0.localizedCaseInsensitiveContains(searchQuery) }
     }
     
+    private var hasAppMetadata: Bool {
+        parser.displayName != nil ||
+        parser.bundleName != nil ||
+        parser.bundleIdentifier != nil ||
+        parser.rawDictionary["CFBundleShortVersionString"] != nil ||
+        parser.rawDictionary["CFBundleVersion"] != nil ||
+        parser.minimumOSVersion != nil
+    }
+    
     var body: some View {
         List {
-            // General Info
-            Section(header: Text("General Info")) {
-                SemanticValueRow(label: "App Name", value: appName)
-                SemanticValueRow(label: "Bundle Identifier", value: bundleID)
-                SemanticValueRow(label: "Version", value: version)
-                SemanticValueRow(label: "Minimum OS", value: minOS)
+            // General Info — only show if app metadata is actually present in plist
+            if hasAppMetadata {
+                Section(header: Text("General Info")) {
+                    SemanticValueRow(label: "App Name", value: appName)
+                    SemanticValueRow(label: "Bundle Identifier", value: bundleID)
+                    SemanticValueRow(label: "Version", value: version)
+                    SemanticValueRow(label: "Minimum OS", value: minOS)
+                }
             }
             
             // Privacy Permissions Card
@@ -530,7 +657,11 @@ struct InfoPlistSemanticView: View {
                 }
             }
         }
+        #if !os(tvOS)
         .listStyle(InsetGroupedListStyle())
+        #else
+        .listStyle(GroupedListStyle())
+        #endif
     }
     
     private func getBackgroundModeIcon(_ mode: String) -> String {
@@ -569,7 +700,9 @@ struct SemanticValueRow: View {
         }
         .contextMenu {
             SwiftUI.Button {
+                #if !os(tvOS)
                 UIPasteboard.general.string = value
+                #endif
             } label: {
                 Label("Copy", systemImage: "doc.on.doc")
             }
@@ -595,12 +728,16 @@ struct LocalCopyableDescriptionRow: View {
         .padding(.vertical, 4)
         .contextMenu {
             SwiftUI.Button {
+                #if !os(tvOS)
                 UIPasteboard.general.string = value
+                #endif
             } label: {
                 Label("Copy Value", systemImage: "doc.on.doc")
             }
             SwiftUI.Button {
+                #if !os(tvOS)
                 UIPasteboard.general.string = key
+                #endif
             } label: {
                 Label("Copy Key", systemImage: "doc.on.doc")
             }
@@ -620,7 +757,9 @@ struct LocalCopyableValueOnlyRow: View {
         }
         .contextMenu {
             SwiftUI.Button {
+                #if !os(tvOS)
                 UIPasteboard.general.string = value
+                #endif
             } label: {
                 Label("Copy", systemImage: "doc.on.doc")
             }
@@ -649,12 +788,16 @@ struct CopyableValueRow: View {
         }
         .contextMenu {
             SwiftUI.Button {
+                #if !os(tvOS)
                 UIPasteboard.general.string = formatValue(value)
+                #endif
             } label: {
                 Label("Copy Value", systemImage: "doc.on.doc")
             }
             SwiftUI.Button {
+                #if !os(tvOS)
                 UIPasteboard.general.string = key
+                #endif
             } label: {
                 Label("Copy Key", systemImage: "doc.on.doc")
             }
@@ -662,8 +805,9 @@ struct CopyableValueRow: View {
     }
     
     private func formatValue(_ val: Any) -> String {
-        if JSONSerialization.isValidJSONObject(val) {
-            if let data = try? JSONSerialization.data(withJSONObject: val, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
+        let sanitized = InfoPlistRawView.jsonSanitize(val)
+        if JSONSerialization.isValidJSONObject(sanitized) {
+            if let data = try? JSONSerialization.data(withJSONObject: sanitized, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
                let string = String(data: data, encoding: .utf8) {
                 let lines = string.components(separatedBy: .newlines)
                 let formatted = lines.map { line -> String in
@@ -673,6 +817,12 @@ struct CopyableValueRow: View {
                 }.joined(separator: "\n")
                 return formatted
             }
+        }
+        if let data = val as? Data {
+            return data.map { String(format: "%02x", $0) }.joined()
+        }
+        if let date = val as? Date {
+            return ISO8601DateFormatter().string(from: date)
         }
         if let array = val as? [Any] {
             return "[" + array.map { formatValue($0) }.joined(separator: ", ") + "]"
@@ -707,7 +857,11 @@ struct SearchBarView: View {
             }
         }
         .padding(8)
+        #if !os(tvOS)
         .background(Color(.secondarySystemBackground))
+        #else
+        .background(Color.white.opacity(0.1))
+        #endif
         .cornerRadius(8)
     }
 }

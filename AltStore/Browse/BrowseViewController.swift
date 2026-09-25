@@ -9,11 +9,9 @@
 @preconcurrency import UIKit
 import Combine
 import CoreData
-@preconcurrency import AltStoreCore
+@preconcurrency import Nuke
 
-import Nuke
-
-class BrowseViewController: UICollectionViewController, PeekPopPreviewing
+class BrowseViewController: UICollectionViewController
 {
     // Nil == Show apps from all sources.
     let source: Source?
@@ -32,12 +30,12 @@ class BrowseViewController: UICollectionViewController, PeekPopPreviewing
     }
     
     private lazy var dataSource = self.makeDataSource()
-    private lazy var placeholderView = RSTPlaceholderView(frame: .zero)
+    private lazy var placeholderView = PlaceholderView(frame: .zero)
     
     private let prototypeCell = AppCardCollectionViewCell(frame: .zero)
     private var sortButton: UIBarButtonItem?
     
-    private var preferredAppSorting: AppSorting = UserDefaults.shared.preferredAppSorting
+    private var preferredAppSorting: AppSorting = UserDefaults.standard.preferredAppSorting
     
     private var cancellables = Set<AnyCancellable>()
     
@@ -81,15 +79,17 @@ class BrowseViewController: UICollectionViewController, PeekPopPreviewing
         self.collectionView.backgroundColor = .altBackground
         self.collectionView.alwaysBounceVertical = true
         
-        self.dataSource.searchController.searchableKeyPaths = [#keyPath(StoreApp.name),
-                                                               #keyPath(StoreApp.subtitle),
-                                                               #keyPath(StoreApp.developerName),
-                                                               #keyPath(StoreApp.bundleIdentifier)]
+        self.dataSource.searchableKeyPaths = [#keyPath(StoreApp.name),
+                                               #keyPath(StoreApp.subtitle),
+                                               #keyPath(StoreApp.developerName),
+                                               #keyPath(StoreApp.bundleIdentifier)]
+        #if !os(tvOS)
         self.navigationItem.searchController = self.dataSource.searchController
+        #endif
         
         self.prototypeCell.contentView.translatesAutoresizingMaskIntoConstraints = false
         
-        self.collectionView.register(AppCardCollectionViewCell.self, forCellWithReuseIdentifier: RSTCellContentGenericCellIdentifier)
+        self.collectionView.register(AppCardCollectionViewCell.self, forCellWithReuseIdentifier: CellContentGenericCellIdentifier)
         
         self.collectionView.dataSource = self.dataSource
         self.collectionView.prefetchDataSource = self.dataSource
@@ -98,13 +98,16 @@ class BrowseViewController: UICollectionViewController, PeekPopPreviewing
         let collectionViewLayout = self.collectionViewLayout as! UICollectionViewFlowLayout
         collectionViewLayout.minimumLineSpacing = 30
         
-        (self as PeekPopPreviewing).registerForPreviewing(with: self, sourceView: self.collectionView)
+        #if !os(tvOS)
+        self.registerForPreviewing(with: self, sourceView: self.collectionView)
         
         let refreshControl = UIRefreshControl(frame: .zero, primaryAction: UIAction { [weak self] _ in
             self?.updateSources()
         })
         self.collectionView.refreshControl = refreshControl
+        #endif
         
+        #if !os(tvOS)
         if self.category != nil, #available(iOS 16, *)
         {
             let categoriesMenu = UIMenu(children: [
@@ -116,6 +119,7 @@ class BrowseViewController: UICollectionViewController, PeekPopPreviewing
             
             self.navigationItem.titleMenuProvider = { _ in categoriesMenu }
         }
+        #endif
         
         self.titleSourceIconView = AppIconImageView(style: .circular)
         
@@ -129,17 +133,16 @@ class BrowseViewController: UICollectionViewController, PeekPopPreviewing
         self.titleStackView.spacing = 4
         self.titleStackView.translatesAutoresizingMaskIntoConstraints = false
         
+        #if !os(tvOS)
         self.navigationItem.largeTitleDisplayMode = .never
         
         if #available(iOS 16, *)
         {
             self.navigationItem.preferredSearchBarPlacement = .automatic
         }
+        #endif
         
-        if #available(iOS 15, *)
-        {
-            self.prepareAppSorting()
-        }
+        self.prepareAppSorting()
         
         self.preparePipeline()
         
@@ -236,12 +239,12 @@ private extension BrowseViewController
         return fetchRequest
     }
     
-    func makeDataSource() -> RSTFetchedResultsCollectionViewPrefetchingDataSource<StoreApp, UIImage>
+    func makeDataSource() -> FetchedResultsCollectionViewPrefetchingDataSource<StoreApp, UIImage>
     {
         let fetchRequest = self.makeFetchRequest()
         
         let context = self.source?.managedObjectContext ?? DatabaseManager.shared.viewContext
-        let dataSource = RSTFetchedResultsCollectionViewPrefetchingDataSource<StoreApp, UIImage>(fetchRequest: fetchRequest, managedObjectContext: context)
+        let dataSource = FetchedResultsCollectionViewPrefetchingDataSource<StoreApp, UIImage>(fetchRequest: fetchRequest, managedObjectContext: context)
         dataSource.placeholderView = self.placeholderView
         dataSource.cellConfigurationHandler = { [weak self] (cell, app, indexPath) in
             guard let self else { return }
@@ -263,17 +266,13 @@ private extension BrowseViewController
             let tintColor = app.tintColor ?? .altPrimary
             cell.tintColor = tintColor
         }
-        dataSource.prefetchHandler = { (storeApp, indexPath, completionHandler) in
-            let iconURL = storeApp.iconURL
-            return Task.detached(priority: .background) {
-                ImagePipeline.shared.loadImage(with: iconURL, progress: nil) { result in
-                    switch result
-                    {
-                    case .success(let response): completionHandler(response.image, nil)
-                    case .failure(let error): completionHandler(nil, error)
-                    }
-                }
-            }
+        dataSource.prefetchHandler = { (storeApp, indexPath) in
+            let image = try await ImagePipeline.shared.image(for: storeApp.iconURL)
+            return await Task.detached(priority: .userInitiated) {
+                _ = image.isPredominantlyLight
+                _ = image.withDropShadow(color: .black, radius: 4, offset: CGSize(width: 0, height: 1.5), opacity: 0.25)
+                return image
+            }.value
         }
         dataSource.prefetchCompletionHandler = { [weak dataSource] (cell, image, indexPath, error) in
             let cell = cell as! AppCardCollectionViewCell
@@ -304,7 +303,9 @@ private extension BrowseViewController
     func updateSources()
     {
         AppManager.shared.updateAllSources { result in
+            #if !os(tvOS)
             self.collectionView.refreshControl?.endRefreshing()
+            #endif
             
             guard case .failure(let error) = result else { return }
             
@@ -374,11 +375,17 @@ private extension BrowseViewController
             
             if let iconURL = source.effectiveIconURL
             {
-                Nuke.loadImage(with: iconURL, into: self.titleSourceIconView) { result in
-                    switch result
+                Task { [weak self] in
+                    do
                     {
-                    case .failure(let error): debugLog("Failed to fetch source icon at \(iconURL). \(error.localizedDescription)")
-                    case .success: self.titleSourceIconView.backgroundColor = .white
+                        let image = try await ImagePipeline.shared.image(for: iconURL)
+                        guard let self else { return }
+                        self.titleSourceIconView.image = image
+                        self.titleSourceIconView.backgroundColor = .white
+                    }
+                    catch
+                    {
+                        debugLog("Failed to fetch source icon at \(iconURL). \(error.localizedDescription)")
                     }
                 }
             }
@@ -411,6 +418,7 @@ private extension BrowseViewController
         
         self.view.tintColor = tintColor
         
+        #if !os(tvOS)
         let appearance = NavigationBarAppearance()
         appearance.configureWithTintColor(tintColor)
         appearance.configureWithDefaultBackground()
@@ -420,6 +428,7 @@ private extension BrowseViewController
         
         self.navigationItem.standardAppearance = appearance
         self.navigationItem.scrollEdgeAppearance = edgeAppearance
+        #endif
         
         // Necessary to tint UISearchController's inline bar button.
         self.navigationController?.navigationBar.tintColor = tintColor
@@ -477,7 +486,6 @@ private extension BrowseViewController
         }
     }
     
-    @available(iOS 15, *)
     func prepareAppSorting()
     {
         if self.preferredAppSorting == .default && self.source == nil
@@ -487,7 +495,7 @@ private extension BrowseViewController
             self.preferredAppSorting = .lastUpdated
             
             // Don't update UserDefaults unless explicitly changed by user.
-            // UserDefaults.shared.preferredAppSorting = .lastUpdated
+            // UserDefaults.standard.preferredAppSorting = .lastUpdated
         }
         
         let children = UIDeferredMenuElement.uncached { [weak self] completion in
@@ -504,7 +512,7 @@ private extension BrowseViewController
                 let state: UIMenuElement.State = (sorting == self.preferredAppSorting) ? .on : .off
                 let action = UIAction(title: sorting.localizedName, image: nil, state: state) { action in
                     self.preferredAppSorting = sorting
-                    UserDefaults.shared.preferredAppSorting = sorting // Update separately to save change.
+                    UserDefaults.standard.preferredAppSorting = sorting // Update separately to save change.
                     
                     self.updateDataSource()
                 }
@@ -549,13 +557,14 @@ private extension BrowseViewController
     
     func install(_ app: StoreApp, at indexPath: IndexPath, progressUpdateHandler: @escaping (Progress) -> Void)
     {
-        let previousProgress = AppManager.shared.installationProgress(for: app)
-        guard previousProgress == nil else {
-            previousProgress?.cancel()
-            return
-        }
-        
-        Task(priority: .userInitiated) { @MainActor in
+        InstallAppDialog.present(storeApp: app, from: self) { [weak self] in
+            guard let self else { return }
+            let previousProgress = AppManager.shared.installationProgress(for: app)
+            guard previousProgress == nil else {
+                previousProgress?.cancel()
+                return
+            }
+            
             // if let installedApp = app.installedApp, installedApp.isUpdateAvailable
             if let installedApp = app.installedApp, installedApp.hasUpdate
             {
@@ -564,36 +573,35 @@ private extension BrowseViewController
             }
             else
             {
-                let group = await AppManager.shared.installAsync(app, presentingViewController: self, completionHandler: finish(_:))
+                let group = AppManager.shared.install(.app(app), presentingViewController: self, completionHandler: finish(_:))
                 progressUpdateHandler(group.progress)
             }
-        }
-        
-        @MainActor
-        func finish(_ result: Result<InstalledApp, Error>)
-        {
-            debugLog("BrowseViewController.finish invoked with result: \(result) for \(app.bundleIdentifier)")
-            DispatchQueue.main.async {
-                switch result
-                {
-                case .failure(let error) where error is CancellationError: break // Ignore
-                case .failure(let error):
-                    let toastView = ToastView(error: error, opensLog: true)
-                    toastView.show(in: self)
-                    
-                case .success: debugLog("Installed app: \(app.bundleIdentifier)")
-                }
-                
-                UIView.performWithoutAnimation {
-                    if let indexPath = self.dataSource.fetchedResultsController.indexPath(forObject: app)
+            
+            func finish(_ result: Result<InstalledApp, Error>)
+            {
+                debugLog("BrowseViewController.finish invoked with result: \(result) for \(app.bundleIdentifier)")
+                DispatchQueue.main.async {
+                    switch result
                     {
-                        debugLog("BrowseViewController.finish: reloading item at \(indexPath)")
-                        self.collectionView.reloadItems(at: [indexPath])
+                    case .failure(let error) where error is CancellationError: break // Ignore
+                    case .failure(let error):
+                        let toastView = ToastView(error: error, opensLog: true)
+                        toastView.show(in: self)
+                        
+                    case .success: debugLog("Installed app: \(app.bundleIdentifier)")
                     }
-                    else
-                    {
-                        debugLog("BrowseViewController.finish: reloading section")
-                        self.collectionView.reloadSections(IndexSet(integer: indexPath.section))
+                    
+                    UIView.performWithoutAnimation {
+                        if let indexPath = self.dataSource.fetchedResultsController.indexPath(forObject: app)
+                        {
+                            debugLog("BrowseViewController.finish: reloading item at \(indexPath)")
+                            self.collectionView.reloadItems(at: [indexPath])
+                        }
+                        else
+                        {
+                            debugLog("BrowseViewController.finish: reloading section")
+                            self.collectionView.reloadData()
+                        }
                     }
                 }
             }
@@ -671,15 +679,3 @@ extension BrowseViewController: UIViewControllerPreviewingDelegate
     }
 }
 
-@available(iOS 17, *)
-#Preview(traits: .portrait) {
-    DatabaseManager.shared.startForPreview()
-   
-    let storyboard = UIStoryboard(name: "Main", bundle: .main)
-    let browseViewController = storyboard.instantiateViewController(identifier: "browseViewController") { coder in
-        BrowseViewController(source: nil, coder: coder)
-    }
-    
-    let navigationController = UINavigationController(rootViewController: browseViewController)
-    return navigationController
-}

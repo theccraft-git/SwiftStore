@@ -7,7 +7,7 @@
 //
 
 import SwiftUI
-@preconcurrency import AltSign
+import SideSign
 
 struct AppExtensionView: View {
     var extensions: Set<ALTApplication>
@@ -73,8 +73,10 @@ class AppExtensionViewHostingController: UIHostingController<AppExtensionView> {
     }
 }
 
+#if !os(tvOS)
 extension AppExtensionViewHostingController: UIPopoverPresentationControllerDelegate {
     func adaptivePresentationStyle(for controller: UIPresentationController) -> UIModalPresentationStyle {
         return .none
     }
 }
+#endif

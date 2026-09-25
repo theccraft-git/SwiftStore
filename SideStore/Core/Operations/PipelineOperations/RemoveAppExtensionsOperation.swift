@@ -6,10 +6,45 @@
 //  Copyright © 2020 Riley Testut. All rights reserved.
 //
 
-@preconcurrency import UIKit
+
 import Foundation
-@preconcurrency import AltStoreCore
-@preconcurrency import AltSign
+import SideSign
+
+public enum AppExtensionCustomization: String, CaseIterable, Identifiable, Sendable {
+    case promptUser     = "prompt-user"
+    case removeAll      = "remove-all"
+    case keepAll        = "keep-all"
+    case useMainProfile = "use-main-profile"
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .promptUser:
+            return "Prompt User"
+        case .removeAll:
+            return "Remove All"
+        case .keepAll:
+            return "Keep All"
+        case .useMainProfile:
+            return "Use Main Profile"
+        }
+    }
+
+    var fixedDecision: ExtensionRemovalDecision? {
+        switch self {
+        case .promptUser:
+            return nil
+        case .removeAll:
+            return .removeAll
+        case .keepAll:
+            return .keepAll(useMainProfile: false)
+        case .useMainProfile:
+            return .keepAll(useMainProfile: true)
+        }
+    }
+}
+
 
 final class RemoveAppExtensionsOperation: BasePipelineOperation<InstallAppOperationContext, ALTApplication>, @unchecked Sendable {
     let localAppExtensions: Set<ALTApplication>?
@@ -20,8 +55,12 @@ final class RemoveAppExtensionsOperation: BasePipelineOperation<InstallAppOperat
     }
     
     override func execute(parentProgress: Progress?) async throws -> ALTApplication {
+        let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[RemoveAppExtensionsOperation] execute() started")
-        defer { debugLog("[RemoveAppExtensionsOperation] execute() completed") }
+        defer {
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            debugLog("[RemoveAppExtensionsOperation] execute() took: \(String(format: "%.3fs", elapsed))")
+        }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         self.setProgress(10)
         
@@ -38,94 +77,37 @@ final class RemoveAppExtensionsOperation: BasePipelineOperation<InstallAppOperat
         self.setProgress(30)
         let excessExtensions = processExtensionsInfo(from: targetAppBundle, localAppExtensions: localAppExtensions)
         
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            Task { @MainActor in
-                guard UserDefaults.standard.customizeAppExtensions,
-                      let presentingViewController = context.authenticatedContext.presentingViewController,
-                      presentingViewController.viewIfLoaded?.window != nil else {
-                    // perform silent extensions cleanup for those that aren't already present in existing app
-                    // background mode: remove only the excess extensions automatically for re-installs
-                    //                  keep all extensions for fresh install (localAppBundle = nil)
-                    do {
-                        try self.removeExtensions(from: excessExtensions, endPercent: 100)
-                        continuation.resume(returning: ())
-                    } catch {
-                        continuation.resume(throwing: error)
-                    }
-                    return
-                }
-                
-                self.setProgress(50)
-                /// Foreground prompt:
-                let firstSentence: String
-                if UserDefaults.standard.activeAppLimitIncludesExtensions {
-                    firstSentence = NSLocalizedString("Non-developer Apple IDs are limited to 3 active apps and app extensions.", comment: "")
-                } else {
-                    firstSentence = NSLocalizedString("Non-developer Apple IDs are limited to creating 10 App IDs per week.", comment: "")
-                }
-                
-                let message = firstSentence + " " + NSLocalizedString("Would you like to remove this app's extensions so they don't count towards your limit? There are \(targetAppBundle.appExtensions.count) Extensions", comment: "")
-                
-                let alertController = UIAlertController(title: NSLocalizedString("App Contains Extensions", comment: ""), message: message, preferredStyle: .alert)
-                alertController.addAction(UIAlertAction(title: UIAlertAction.cancel.title, style: UIAlertAction.cancel.style, handler: { _ in
-                    continuation.resume(throwing: OperationError.cancelled)
-                }))
-                alertController.addAction(UIAlertAction(title: NSLocalizedString("Keep App Extensions (Use Main Profile)", comment: ""), style: .default) { _ in
-                    self.context.useMainProfile = true
-                    self.setProgress(100)
-                    continuation.resume(returning: ())
-                })
-                alertController.addAction(UIAlertAction(title: NSLocalizedString("Keep App Extensions (Register App ID for Each Extension)", comment: ""), style: .default) { _ in
-                    self.setProgress(100)
-                    continuation.resume(returning: ())
-                })
-                alertController.addAction(UIAlertAction(title: NSLocalizedString("Remove App Extensions", comment: ""), style: .destructive) { _ in
-                    do {
-                        try self.removeExtensions(from: targetAppBundle.appExtensions, endPercent: 85)
-                        try self.updateManifest()
-                        self.setProgress(100)
-                        continuation.resume(returning: ())
-                    } catch {
-                        continuation.resume(throwing: error)
-                    }
-                })
-                
-                alertController.addAction(UIAlertAction(title: NSLocalizedString("Choose App Extensions", comment: ""), style: .default) { _ in
-                    let popoverContentController = AppExtensionViewHostingController(extensions: targetAppBundle.appExtensions) { selection in
-                        do {
-                            try self.removeExtensions(from: Set(selection), endPercent: 100)
-                            continuation.resume(returning: ())
-                        } catch {
-                            continuation.resume(throwing: error)
-                        }
-                    }
-                    
-                    let suiview = popoverContentController.view!
-                    suiview.translatesAutoresizingMaskIntoConstraints = false
-                    
-                    popoverContentController.modalPresentationStyle = .popover
-                    
-                    if let popoverPresentationController = popoverContentController.popoverPresentationController {
-                        popoverPresentationController.sourceView = presentingViewController.view
-                        popoverPresentationController.sourceRect = CGRect(x: 50, y: 50, width: 4, height: 4)
-                        popoverPresentationController.delegate = popoverContentController
-                        
-                        presentingViewController.present(popoverContentController, animated: true)
-                    } else {
-                        continuation.resume(throwing: OperationError.invalidParameters("RemoveAppExtensionsOperation: popoverContentController.popoverPresentationController is nil"))
-                    }
-                })
-                
-                presentingViewController.present(alertController, animated: true) {
-                    if presentingViewController.presentedViewController == nil && !alertController.isViewLoaded {
-                        let errMsg = "RemoveAppExtensionsOperation: unable to present dialog, view context not available." +
-                                     "\nDid you move to different screen or background after starting the operation?"
-                        continuation.resume(throwing: OperationError.invalidOperationContext(errMsg))
-                    }
-                }
-            }
+        let handler = self.context.handler.extensionRemovalHandler
+        let decision: ExtensionRemovalDecision
+        if let preset = UserDefaults.standard.customizeAppExtensions.fixedDecision {
+            decision = preset
+        } else {
+            self.setProgress(50)
+            decision = try await handler.selectAppExtensionsToRemove(
+                appBundle: targetAppBundle,
+                localAppExtensions: Array(localAppExtensions ?? []),
+                excessExtensions: excessExtensions
+            )
         }
-        self.setProgress(100)
+
+        switch decision {
+            case .cancel:
+                throw OperationError.cancelled
+
+            case .keepAll(let useMainProfile):
+                self.context.useMainProfile = useMainProfile
+                self.setProgress(100)
+
+            case .removeAll:
+                try self.removeExtensions(from: targetAppBundle.appExtensions, endPercent: 85)
+                try self.updateManifest()
+                self.setProgress(100)
+
+            case .removeSelected(let selection):
+                try self.removeExtensions(from: selection, endPercent: 100)
+                self.setProgress(100)
+        }
+        
         return targetAppBundle
     }
     

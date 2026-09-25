@@ -6,11 +6,10 @@
 //  Copyright © 2020 Riley Testut. All rights reserved.
 //
 
-@preconcurrency import UIKit
+
 import Foundation
 import CryptoKit
-@preconcurrency import AltStoreCore
-@preconcurrency import AltSign
+import SideSign
 
 import RegexBuilder
 
@@ -21,12 +20,10 @@ private extension ALTEntitlement {
     ]
 }
 
-extension VerifyAppOperation {
-    enum PermissionReviewMode {
-        case none
-        case all
-        case added
-    }
+enum PermissionReviewMode {
+    case none
+    case all
+    case added
 }
 
 final class VerifyAppOperation: BasePipelineOperation<InstallAppOperationContext, Bool>, @unchecked Sendable {
@@ -37,28 +34,43 @@ final class VerifyAppOperation: BasePipelineOperation<InstallAppOperationContext
     }
     
     override func execute(parentProgress: Progress?) async throws -> Bool {
+        let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[VerifyAppOperation] execute() started")
-        defer { debugLog("[VerifyAppOperation] execute() completed") }
+        defer {
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            debugLog("[VerifyAppOperation] execute() took: \(String(format: "%.3fs", elapsed))")
+        }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         guard let appBundle = self.context.targetAppBundle else {
             throw OperationError.invalidParameters("VerifyAppOperation: context.appBundle is nil")
         }
         
         guard !UserDefaults.standard.appVerificationDisabled else {
-            debugLog("[VerifyAppOperation] App verification was disabled for \(appBundle.bundleIdentifier), skipping verification.")
+            debugLog("[VerifyAppOperation] App verification was disabled for \(appBundle.bundleIdentifier), skipping all verification.")
             self.setProgress(100)
             return true
         }
+        
         self.setProgress(10)
 
-        if !["ny.litritt.ignited", "com.litritt.ignited"].contains(where: { $0 == appBundle.bundleIdentifier }) {
-            guard appBundle.bundleIdentifier == self.context.bundleIdentifier else {
-                throw VerificationError.mismatchedBundleIdentifiers(sourceBundleID: self.context.bundleIdentifier, appBundle: appBundle)
+        // 1. Bundle ID Verification
+        if UserDefaults.standard.isBundleIDVerificationEnabled {
+            if !["ny.litritt.ignited", "com.litritt.ignited"].contains(where: { $0 == appBundle.bundleIdentifier }) {
+                guard appBundle.bundleIdentifier == self.context.bundleIdentifier else {
+                    throw VerificationError.mismatchedBundleIdentifiers(sourceBundleID: self.context.bundleIdentifier, appBundle: appBundle)
+                }
             }
+        } else {
+            debugLog("[VerifyAppOperation] Bundle ID verification disabled, skipping check.")
         }
         
-        guard ProcessInfo.processInfo.isOperatingSystemAtLeast(appBundle.minimumiOSVersion) else {
-            throw VerificationError.iOSVersionNotSupported(app: appBundle, requiredOSVersion: appBundle.minimumiOSVersion)
+        // 2. iOS Version Compatibility Check
+        if UserDefaults.standard.isiOSVersionVerificationEnabled {
+            guard ProcessInfo.processInfo.isOperatingSystemAtLeast(appBundle.minimumiOSVersion) else {
+                throw VerificationError.iOSVersionNotSupported(app: appBundle, requiredOSVersion: appBundle.minimumiOSVersion)
+            }
+        } else {
+            debugLog("[VerifyAppOperation] iOS version verification disabled, skipping check.")
         }
         
         guard let appVersion = context.appVersion else {
@@ -66,18 +78,40 @@ final class VerifyAppOperation: BasePipelineOperation<InstallAppOperationContext
             return false
         }
         
-        guard let ipaURL = context.ipaURL else { throw OperationError.appNotFound(name: appBundle.name) }
+        guard let ipaURL = context.ipaURL else {
+            throw OperationError.invalidParameters("Missing IPA URL for '\(appBundle.name)' in operation context")
+        }
         self.setProgress(30)
                             
-        try await self.verifyHash(of: appBundle, at: ipaURL, matches: appVersion)
-        self.setProgress(60)
+        // 3. Checksum (SHA-256) Verification
+        if UserDefaults.standard.isChecksumVerificationEnabled {
+            try await self.verifyHash(of: appBundle, at: ipaURL, matches: appVersion)
+        } else {
+            debugLog("[VerifyAppOperation] Checksum verification disabled for \(appBundle.bundleIdentifier), skipping hash check.")
+        }
+        self.setProgress(50)
         
-        try await self.verifyDownloadedVersion(of: appBundle, matches: appVersion)
-        self.setProgress(80)
+        // 4. File Size Verification
+        if UserDefaults.standard.isFileSizeVerificationEnabled {
+            try await self.verifyFileSize(of: appBundle, at: ipaURL, matches: appVersion)
+        } else {
+            debugLog("[VerifyAppOperation] File size verification disabled for \(appBundle.bundleIdentifier), skipping size check.")
+        }
+        self.setProgress(70)
         
-        // process missing permissions check only if the source is V2 or later
-        if let source = appVersion.app?.source,
-           source.isSourceAtLeastV2 {
+        // 5. Version & Build Version Verification
+        if UserDefaults.standard.isAppVersionVerificationEnabled {
+            try await self.verifyDownloadedVersion(of: appBundle, matches: appVersion)
+        } else {
+            debugLog("[VerifyAppOperation] App version verification disabled for \(appBundle.bundleIdentifier), skipping version check.")
+        }
+        self.setProgress(85)
+        
+        // 6. Permissions & Entitlements Verification (for V2+ sources)
+        if !UserDefaults.standard.permissionCheckingDisabled,
+           let source = appVersion.app?.source,
+           source.isSourceAtLeastV2
+        {
             try await self.verifyPermissions(of: appBundle, match: appVersion)
         }
         self.setProgress(100)
@@ -88,13 +122,27 @@ final class VerifyAppOperation: BasePipelineOperation<InstallAppOperationContext
         // Do nothing if source doesn't provide hash.
         guard let expectedHash = await $appVersion.sha256 else { return }
 
-        let data = try Data(contentsOf: ipaURL)
+        let data = try Data(contentsOf: ipaURL, options: .alwaysMapped)
         let sha256Hash = SHA256.hash(data: data)
         let hashString = sha256Hash.compactMap { String(format: "%02x", $0) }.joined()
         
         verboseLog("[VerifyAppOperation] Comparing app hash (\(hashString)) against expected hash (\(expectedHash))...")
         
         guard hashString == expectedHash else { throw VerificationError.mismatchedHash(hashString, expectedHash: expectedHash, app: appBundle) }
+    }
+    
+    private func verifyFileSize(of appBundle: ALTApplication, at ipaURL: URL, @AsyncManaged matches appVersion: AppVersion) async throws {
+        let expectedSize = await $appVersion.size
+        guard expectedSize > 0 else { return }
+
+        let resourceValues = try ipaURL.resourceValues(forKeys: [.fileSizeKey])
+        guard let fileSize = resourceValues.fileSize else { return }
+        
+        verboseLog("[VerifyAppOperation] Comparing app file size (\(fileSize) bytes) against expected size (\(expectedSize) bytes)...")
+        
+        guard Int64(fileSize) == expectedSize else {
+            throw VerificationError.mismatchedSize(Int64(fileSize), expectedSize: expectedSize, app: appBundle)
+        }
     }
     
     private func verifyDownloadedVersion(of appBundle: ALTApplication, @AsyncManaged matches appVersion: AppVersion) async throws {
@@ -126,32 +174,33 @@ final class VerifyAppOperation: BasePipelineOperation<InstallAppOperationContext
             return
         }
         
+        let handler = self.context.handler.entitlementsReviewHandler
         switch self.permissionsMode {
         case .none: break
         case .all:
-            guard let presentingViewController = self.context.presentingViewController else { break } // Don't fail just because we can't show permissions.
-            
             let allEntitlements = allPermissions.compactMap { $0 as? ALTEntitlement }
             if !allEntitlements.isEmpty {
-                try await self.review(allEntitlements, for: appBundle, mode: .all, presentingViewController: presentingViewController)
+                try await handler.reviewPermissions(allEntitlements, for: appBundle, mode: .all)
             }
             
         case .added:
-            let installedAppURL = InstalledApp.fileURL(for: appBundle)
-            guard let previousApp = ALTApplication(fileURL: installedAppURL) else { throw OperationError.appNotFound(name: appBundle.name) }
+            guard let installedApp = self.context.installedApp else {
+                throw OperationError.missingAppBundle(reason: "Could not locate installed app for '\(appBundle.name)' to verify added permissions.")
+            }
+            let installedAppURL = installedApp.fileURL
+            guard let previousApp = ALTApplication(fileURL: installedAppURL) else {
+                throw OperationError.missingAppBundle(reason: "Could not locate installed bundle for '\(appBundle.name)' at '\(installedAppURL.lastPathComponent)'")
+            }
             
-            var previousEntitlements = Set(previousApp.entitlements.keys)
+            var previousEntitlements = Set(previousApp.entitlements.keys.map { ALTEntitlement(rawValue: $0) })
             for appExtension in previousApp.appExtensions {
-                previousEntitlements.formUnion(appExtension.entitlements.keys)
+                previousEntitlements.formUnion(appExtension.entitlements.keys.map { ALTEntitlement(rawValue: $0) })
             }
             
             // Make sure all entitlements already exist in previousApp.
             let addedEntitlements = Array(allPermissions.lazy.compactMap { $0 as? ALTEntitlement }.filter { !previousEntitlements.contains($0) })
             if !addedEntitlements.isEmpty {
-                // _DO_ throw error if there isn't a presentingViewController.
-                guard let presentingViewController = self.context.presentingViewController else { throw VerificationError.addedPermissions(addedEntitlements, appVersion: appVersion) }
-                
-                try await self.review(addedEntitlements, for: appBundle, mode: .added, presentingViewController: presentingViewController)
+                try await handler.reviewPermissions(addedEntitlements, for: appBundle, mode: .added)
             }
         }
     }
@@ -168,14 +217,14 @@ final class VerifyAppOperation: BasePipelineOperation<InstallAppOperationContext
     }
 
     private func entitlements(for appBundle: ALTApplication) -> Set<ALTEntitlement> {
-        var allEntitlements = Set(appBundle.entitlements.keys)
+        var allEntitlements = Set(appBundle.entitlements.keys.map { ALTEntitlement(rawValue: $0) })
         for appExtension in appBundle.appExtensions {
-            allEntitlements.formUnion(appExtension.entitlements.keys)
+            allEntitlements.formUnion(appExtension.entitlements.keys.map { ALTEntitlement(rawValue: $0) })
         }
         
         allEntitlements = allEntitlements.filter { !ALTEntitlement.ignoredEntitlements.contains($0) }
         
-        if let isDebuggable = appBundle.entitlements[.getTaskAllow] as? Bool, !isDebuggable {
+        if let isDebuggable = appBundle.entitlements[ALTEntitlement.getTaskAllow.rawValue] as? Bool, !isDebuggable {
             allEntitlements.remove(.getTaskAllow)
         }
         
@@ -184,15 +233,15 @@ final class VerifyAppOperation: BasePipelineOperation<InstallAppOperationContext
 
     private func privacyPermissions(for appBundle: ALTApplication) -> [ALTAppPrivacyPermission] {
         return ([appBundle] + appBundle.appExtensions).flatMap { (app) in
-            let permissions = app.bundle.infoDictionary?.keys.compactMap { key -> ALTAppPrivacyPermission? in
-                if #available(iOS 16, *) {
+            let permissions = app.infoPlist.keys.compactMap { key -> ALTAppPrivacyPermission? in
+                if #available(iOS 16, tvOS 16, *) {
                     guard key.wholeMatch(of: Regex.privacyPermission) != nil else { return nil }
                 } else {
                     guard key.contains("UsageDescription") else { return nil }
                 }
                 
                 return ALTAppPrivacyPermission(rawValue: key)
-            } ?? []
+            }
             
             return permissions
         }
@@ -207,7 +256,7 @@ final class VerifyAppOperation: BasePipelineOperation<InstallAppOperationContext
             if sourcePermissions.contains(AnyHashable(permission)) {
                 return false
             } else if permission.type == .privacy {
-                guard #available(iOS 16, *) else {
+                guard #available(iOS 16, tvOS 16, *) else {
                     return false
                 }
                 
@@ -226,7 +275,7 @@ final class VerifyAppOperation: BasePipelineOperation<InstallAppOperationContext
                 throw VerificationError.undeclaredPermissions(missingPermissions, app: appBundle)
             }
         } catch let error as VerificationError where error.code == .undeclaredPermissions {
-            if let recommendedSources = UserDefaults.shared.recommendedSources, let (sourceID, sourceURL) = await $storeApp.perform({
+            if let recommendedSources = UserDefaults.standard.recommendedSources, let (sourceID, sourceURL) = await $storeApp.perform({
                 $0.source.map { ($0.identifier, $0.sourceURL) }
             }) {
                 let normalizedSourceURL = try? sourceURL.normalized()
@@ -238,24 +287,6 @@ final class VerifyAppOperation: BasePipelineOperation<InstallAppOperationContext
             }
             
             throw error
-        }
-    }
-    
-    @MainActor @available(iOS 15, *)
-    private func review(_ permissions: [ALTEntitlement], for app: AppProtocol, mode: PermissionReviewMode, presentingViewController: UIViewController) async throws {
-        let reviewPermissionsViewController = ReviewPermissionsViewController(app: app, permissions: permissions, mode: mode)
-        let navigationController = UINavigationController(rootViewController: reviewPermissionsViewController)
-        
-        defer {
-            navigationController.dismiss(animated: true)
-        }
-        
-        try await withCheckedThrowingContinuation { continuation in
-            reviewPermissionsViewController.completionHandler = { result in
-                continuation.resume(with: result)
-            }
-            
-            presentingViewController.present(navigationController, animated: true)
         }
     }
 }

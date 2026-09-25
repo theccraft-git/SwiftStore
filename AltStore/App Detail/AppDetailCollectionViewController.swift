@@ -9,7 +9,6 @@
 @preconcurrency import UIKit
 import SwiftUI
 import CoreData
-@preconcurrency import AltStoreCore
 
 extension AppDetailCollectionViewController
 {
@@ -107,7 +106,7 @@ class AppDetailCollectionViewController: UICollectionViewController
         self.collectionView.collectionViewLayout = collectionViewLayout
         
         self.collectionView.register(UICollectionViewCell.self, forCellWithReuseIdentifier: "PrivacyCell")
-        self.collectionView.register(UICollectionViewListCell.self, forCellWithReuseIdentifier: RSTCellContentGenericCellIdentifier)
+        self.collectionView.register(UICollectionViewListCell.self, forCellWithReuseIdentifier: CellContentGenericCellIdentifier)
         
         self.headerRegistration = UICollectionView.SupplementaryRegistration<UICollectionViewListCell>(elementKind: UICollectionView.elementKindSectionHeader) { [weak self] (headerView, elementKind, indexPath) in
             var configuration = UIListContentConfiguration.plainHeader()
@@ -177,7 +176,9 @@ private extension AppDetailCollectionViewController
             case .unknownEntitlements where !unknownEntitlementPermissions.isEmpty:
                 var configuration = UICollectionLayoutListConfiguration(appearance: .plain)
                 configuration.headerMode = .supplementary
+                #if !os(tvOS)
                 configuration.showsSeparators = false
+                #endif
                 configuration.backgroundColor = .altBackground
                 
                 let layoutSection = NSCollectionLayoutSection.list(using: configuration, layoutEnvironment: layoutEnvironment)
@@ -191,19 +192,19 @@ private extension AppDetailCollectionViewController
         return layout
     }
     
-    func makeDataSource() -> RSTCompositeCollectionViewDataSource<AppPermission>
+    func makeDataSource() -> CompositeCollectionViewDataSource<AppPermission>
     {
-        let dataSource = RSTCompositeCollectionViewDataSource<AppPermission>(dataSources: [self.privacyDataSource, self.entitlementsDataSource])
+        let dataSource = CompositeCollectionViewDataSource<AppPermission>(dataSources: [self.privacyDataSource, self.entitlementsDataSource])
         return dataSource
     }
     
-    func makePrivacyDataSource() -> RSTDynamicCollectionViewDataSource<AppPermission>
+    func makePrivacyDataSource() -> DynamicCollectionViewDataSource<AppPermission>
     {
-        let dataSource = RSTDynamicCollectionViewDataSource<AppPermission>()
+        let dataSource = DynamicCollectionViewDataSource<AppPermission>()
         dataSource.cellIdentifierHandler = { _ in "PrivacyCell" }
         dataSource.numberOfSectionsHandler = { 1 }
         dataSource.dynamicCellConfigurationHandler = { [weak self] (cell, indexPath) in
-            guard let self, #available(iOS 16, *) else { return }
+            guard let self, #available(iOS 16, tvOS 16, *) else { return }
             
             cell.contentConfiguration = UIHostingConfiguration {
                 AppPermissionsCard(title: "Privacy",
@@ -214,7 +215,7 @@ private extension AppDetailCollectionViewController
             .margins(.horizontal, 0)
         }
         
-        if #available(iOS 16, *)
+        if #available(iOS 16, tvOS 16, *)
         {
             dataSource.numberOfItemsHandler = { [privacyPermissions] _ in !privacyPermissions.isEmpty ? 1 : 0 }
         }
@@ -226,12 +227,12 @@ private extension AppDetailCollectionViewController
         return dataSource
     }
     
-    func makeEntitlementsDataSource() -> RSTCompositeCollectionViewDataSource<AppPermission>
+    func makeEntitlementsDataSource() -> CompositeCollectionViewDataSource<AppPermission>
     {
-        let knownEntitlementsDataSource = RSTArrayCollectionViewDataSource<AppPermission>(items: self.knownEntitlementPermissions)
-        let unknownEntitlementsDataSource = RSTArrayCollectionViewDataSource<AppPermission>(items: self.unknownEntitlementPermissions)
+        let knownEntitlementsDataSource = ArrayCollectionViewDataSource<AppPermission>(items: self.knownEntitlementPermissions)
+        let unknownEntitlementsDataSource = ArrayCollectionViewDataSource<AppPermission>(items: self.unknownEntitlementPermissions)
         
-        let dataSource = RSTCompositeCollectionViewDataSource<AppPermission>(dataSources: [knownEntitlementsDataSource, unknownEntitlementsDataSource])
+        let dataSource = CompositeCollectionViewDataSource<AppPermission>(dataSources: [knownEntitlementsDataSource, unknownEntitlementsDataSource])
         dataSource.cellConfigurationHandler = { [weak self] (cell, appPermission, _) in
             let cell = cell as! UICollectionViewListCell
             let tintColor = self?.app.tintColor ?? .altPrimary
@@ -246,7 +247,7 @@ private extension AppDetailCollectionViewController
                 content.image = UIImage(systemName: appPermission.effectiveSymbolName)
                 content.imageProperties.tintColor = tintColor
                 
-                if #available(iOS 15.4, *) /*, let self */ // Capturing self leads to strong-reference cycle.
+                if #available(iOS 15.4, tvOS 15.4, *)
                 {
                     let detailAccessory = UICellAccessory.detail(options: .init(tintColor: tintColor)) {
                         self?.showPermissionAlert(for: appPermission)

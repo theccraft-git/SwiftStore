@@ -7,7 +7,6 @@
 //
 
 @preconcurrency import UIKit
-@preconcurrency import AltStoreCore
 
 import Nuke
 
@@ -30,7 +29,7 @@ extension AppBannerView
     }
 }
 
-class AppBannerView: RSTNibView
+class AppBannerView: NibView
 {
     override var accessibilityLabel: String? {
         get { return self.accessibilityView?.accessibilityLabel }
@@ -188,20 +187,26 @@ extension AppBannerView
             
             if let iconURL = source.effectiveIconURL
             {
-                if let image = ImageCache.shared[iconURL]
+                if let cached = ImagePipeline.shared.cache[iconURL]
                 {
                     self.sourceIconImageView.backgroundColor = .white
-                    self.sourceIconImageView.image = image.image
+                    self.sourceIconImageView.image = cached.image
                 }
                 else
                 {
                     self.sourceIconImageView.image = nil
                     
-                    Nuke.loadImage(with: iconURL, into: self.sourceIconImageView) { result in
-                        switch result
+                    Task { [weak self] in
+                        do
                         {
-                        case .failure(let error): debugLog("Failed to fetch source icon from \(iconURL). \(error.localizedDescription)")
-                        case .success: self.sourceIconImageView.backgroundColor = .white // In case icon has transparent background.
+                            let image = try await ImagePipeline.shared.image(for: iconURL)
+                            guard let self else { return }
+                            self.sourceIconImageView.image = image
+                            self.sourceIconImageView.backgroundColor = .white
+                        }
+                        catch
+                        {
+                            debugLog("Failed to fetch source icon from \(iconURL). \(error.localizedDescription)")
                         }
                     }
                 }
@@ -247,7 +252,9 @@ extension AppBannerView
         }
         
         UIView.performWithoutAnimation {
-            self.button.resetDisplayState()
+            if case .custom = buttonAction {} else {
+                self.button.resetDisplayState()
+            }
             
             switch buttonAction
             {
@@ -395,6 +402,7 @@ private extension AppBannerView
             self.backgroundEffectView.contentView.backgroundColor = tintColor?.adjustedForDisplay
             self.backgroundEffectView.backgroundColor = nil
             
+            #if !os(tvOS)
             if let tintColor, tintColor.isTooBright
             {
                 let textVibrancyEffect = UIVibrancyEffect(blurEffect: .init(style: .systemChromeMaterialLight), style: .fill)
@@ -406,6 +414,10 @@ private extension AppBannerView
                 let textVibrancyEffect = UIVibrancyEffect(blurEffect: .init(style: .systemThinMaterialDark), style: .secondaryLabel)
                 self.vibrancyView.effect = textVibrancyEffect
             }
+            #else
+            let textVibrancyEffect = UIVibrancyEffect(blurEffect: UIBlurEffect(style: .dark))
+            self.vibrancyView.effect = textVibrancyEffect
+            #endif
         }
     }
 }
