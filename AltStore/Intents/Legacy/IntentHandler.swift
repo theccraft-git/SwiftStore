@@ -6,11 +6,10 @@
 //  Copyright © 2020 Riley Testut. All rights reserved.
 //
 
+#if !os(tvOS)
 @preconcurrency import UIKit
 import Foundation
-@preconcurrency import AltStoreCore
 
-@available(iOS 14, *)
 final class IntentHandler: NSObject, RefreshAllIntentHandling
 {
     private let queue = DispatchQueue(label: "io.sidestore.IntentHandler")
@@ -41,7 +40,7 @@ final class IntentHandler: NSObject, RefreshAllIntentHandling
         // 10 seconds or longer results in timeout regardless.
         self.queue.asyncAfter(deadline: .now() + 8.0) {
             Task {
-                if await getMinimuxerStatus() == .ready {
+                if await isMinimuxerReady().isSuccess {
                     self.finish(intent, response: RefreshAllIntentResponse(code: .success, userActivity: nil))
                 } else {
                     self.finish(intent, response: RefreshAllIntentResponse(code: .failure, userActivity: nil))
@@ -49,24 +48,17 @@ final class IntentHandler: NSObject, RefreshAllIntentHandling
             }
         }
         
-        if !DatabaseManager.shared.isStarted
-        {
-            DatabaseManager.shared.start() { (error) in
-                if let error = error
-                {
-                    self.finish(intent, response: RefreshAllIntentResponse.failure(localizedDescription: error.localizedDescription))
-                }
-                else
-                {
-                    self.finish(intent, response: RefreshAllIntentResponse(code: .ready, userActivity: nil))
-                    self.refreshApps(intent: intent)
-                }
+        Task<Void, Never>.detached(priority: .userInitiated) {
+            do
+            {
+                try await DatabaseManager.shared.start()
+                self.finish(intent, response: RefreshAllIntentResponse(code: .ready, userActivity: nil))
+                self.refreshApps(intent: intent)
             }
-        }
-        else
-        {
-            self.finish(intent, response: RefreshAllIntentResponse(code: .ready, userActivity: nil))
-            self.refreshApps(intent: intent)
+            catch
+            {
+                self.finish(intent, response: RefreshAllIntentResponse.failure(localizedDescription: error.localizedDescription))
+            }
         }
     }
     
@@ -92,7 +84,7 @@ final class IntentHandler: NSObject, RefreshAllIntentHandling
                     // so we'll now present a normal notification when finished.
                     operation.presentsFinishedNotification = true
                     Task {
-                        if await getMinimuxerStatus() == .ready {
+                        if await isMinimuxerReady().isSuccess {
                             self.finish(intent, response: RefreshAllIntentResponse(code: .success, userActivity: nil))
                         } else {
                             self.finish(intent, response: RefreshAllIntentResponse(code: .failure, userActivity: nil))
@@ -146,7 +138,7 @@ private extension IntentHandler
                 self.finish(intent, response: RefreshAllIntentResponse(code: .success, userActivity: nil))
                 UIApplication.shared.perform(#selector(NSXPCConnection.suspend))
             }
-            catch ~RefreshErrorCode.noInstalledApps
+            catch OperationError.noInstalledApps
             {
                 self.finish(intent, response: RefreshAllIntentResponse(code: .success, userActivity: nil))
                 UIApplication.shared.perform(#selector(NSXPCConnection.suspend))
@@ -163,3 +155,4 @@ private extension IntentHandler
         self.operations[intent] = operation
     }
 }
+#endif

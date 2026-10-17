@@ -12,12 +12,17 @@ import Combine
 final class ConnectionConfig: ObservableObject {
     static let shared = ConnectionConfig()
 
-    private static var defaultOverrideIP: String { AppConstants.Connection.defaultOverrideIP }
+    // yeah we dont use default coz we expect auto discovery to find it
+    private static var defaultOverrideIP: String { "" }     
     private static var defaultRemoteServerIP: String { AppConstants.Connection.defaultRemoteServerIP }
+    private static var defaultWireGuardServerHost: String { AppConstants.Proxy.address }
+    private static var defaultWireGuardServerPort: UInt16 { AppConstants.Proxy.defaultPort }
 
     @Published var tunnelIfaceIp: String?
     @Published var tunnelIfaceSubnetMask: String?
     @Published var tunnelPeerIp: String?
+    @Published var tunnelPeerSubnetMask: String?
+    @Published var tunnelPeerReachable: Bool = false
     @Published var overrideTunnelPeerIp: String = overrideIPStorage {
         didSet { Self.overrideIPStorage = overrideTunnelPeerIp }
     }
@@ -33,14 +38,22 @@ final class ConnectionConfig: ObservableObject {
         didSet { Self.useLocalVPNStorage = useLocalVPN }
     }
 
+    @Published var wireguardServerHost: String = wireguardServerHostStorage {
+        didSet { Self.wireguardServerHostStorage = wireguardServerHost }
+    }
+
+    @Published var wireguardServerPort: UInt16 = wireguardServerPortStorage {
+        didSet { Self.wireguardServerPortStorage = wireguardServerPort }
+    }
+
     private static var overrideIPStorage: String {
-        get { getStoredOverrideIP(default: defaultOverrideIP) }
-        set { setStoredOverrideIP(newValue) }
+        get { UserDefaults.standard.tunnelOverridePeerIp ?? defaultOverrideIP }
+        set { UserDefaults.standard.tunnelOverridePeerIp = newValue }
     }
 
     private static var remoteServerIPStorage: String {
-        get { getStoredRemoteServerIP(default: defaultRemoteServerIP) }
-        set { setStoredRemoteServerIP(newValue) }
+        get { UserDefaults.standard.remoteServerIp ?? defaultRemoteServerIP }
+        set { UserDefaults.standard.remoteServerIp = newValue }
     }
 
     private static var useLocalVPNStorage: Bool {
@@ -48,26 +61,76 @@ final class ConnectionConfig: ObservableObject {
         set { UserDefaults.standard.useLocalVPN = newValue }
     }
 
+    private static var wireguardServerHostStorage: String {
+        get { UserDefaults.standard.wireGuardServerHost ?? defaultWireGuardServerHost }
+        set { UserDefaults.standard.wireGuardServerHost = newValue }
+    }
+
+    private static var wireguardServerPortStorage: UInt16 {
+        get { UserDefaults.standard.wireGuardServerPort ?? defaultWireGuardServerPort }
+        set { UserDefaults.standard.wireGuardServerPort = newValue }
+    }
+
+    var tunnelPeerActive: ActiveState { tunnelPeerReachable ? .yes : .no }
     var overrideTunnelPeerActive: ActiveState { overrideTunnelPeerReachable ? .yes : .no }
     var remoteActive: ActiveState { remoteReachable ? .yes : .no }
+
+    var formattedTunnelIface: String? {
+        guard let ip = tunnelIfaceIp, !ip.isEmpty else { return nil }
+        if let mask = tunnelIfaceSubnetMask, let cidr = Self.cidrPrefix(from: mask) {
+            return "\(ip)/\(cidr)"
+        }
+        return ip
+    }
+
+    var formattedTunnelPeer: String? {
+        guard let ip = tunnelPeerIp, !ip.isEmpty else { return nil }
+        if let mask = tunnelPeerSubnetMask, let cidr = Self.cidrPrefix(from: mask) {
+            return "\(ip)/\(cidr)"
+        }
+        return ip
+    }
+
+    static func cidrPrefix(from subnetMask: String) -> Int? {
+        let octets = subnetMask.split(separator: ".").compactMap { UInt8($0) }
+        guard octets.count == 4 else { return nil }
+        return octets.reduce(0) { $0 + $1.nonzeroBitCount }
+    }
 }
 
-// MARK: - Private ConnectionConfig Domain Persistence Extension
+extension UserDefaults {
+    @objc var tunnelOverridePeerIp: String? {
+        get { self.string(forKey: "TunnelOverridePeerIp") }
+        set { self.set(newValue, forKey: "TunnelOverridePeerIp") }
+    }
 
-private extension ConnectionConfig {
-    static func getStoredOverrideIP(default defaultIP: String) -> String {
-        return UserDefaults.standard.string(forKey: "TunnelOverridePeerIp") ?? defaultIP
+    @objc var remoteServerIp: String? {
+        get { self.string(forKey: "RemoteServerIp") }
+        set { self.set(newValue, forKey: "RemoteServerIp") }
     }
-    
-    static func setStoredOverrideIP(_ ip: String) {
-        UserDefaults.standard.set(ip, forKey: "TunnelOverridePeerIp")
+
+    @objc var wireGuardServerHost: String? {
+        get { self.string(forKey: "WireGuardServerHost") }
+        set { self.set(newValue, forKey: "WireGuardServerHost") }
     }
-    
-    static func getStoredRemoteServerIP(default defaultIP: String) -> String {
-        return UserDefaults.standard.string(forKey: "RemoteServerIp") ?? defaultIP
+
+    var wireGuardServerPort: UInt16? {
+        get {
+            guard self.object(forKey: "WireGuardServerPort") != nil else { return nil }
+            let val = self._wireGuardServerPort
+            return (val > 0 && val <= 65535) ? UInt16(val) : nil
+        }
+        set {
+            if let newValue {
+                self._wireGuardServerPort = Int(newValue)
+            } else {
+                self.removeObject(forKey: "WireGuardServerPort")
+            }
+        }
     }
-    
-    static func setStoredRemoteServerIP(_ ip: String) {
-        UserDefaults.standard.set(ip, forKey: "RemoteServerIp")
+
+    @objc(wireGuardServerPort) private var _wireGuardServerPort: Int {
+        get { self.integer(forKey: "WireGuardServerPort") }
+        set { self.set(newValue, forKey: "WireGuardServerPort") }
     }
 }

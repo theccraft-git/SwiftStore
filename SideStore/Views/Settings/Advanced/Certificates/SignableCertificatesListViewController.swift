@@ -9,23 +9,22 @@
 @preconcurrency import UIKit
 import Foundation
 import SwiftUI
-@preconcurrency import AltStoreCore
-@preconcurrency import AltSign
+import SideSign
 
 struct SignableCertificateRowView: View {
     let cert: ALTCertificate
     let appName: String
     let appCertSerial: String?
+    @ObservedObject var viewModel: CertificatesViewModel
     
     private var isAppCert: Bool {
         guard let appCertSerial else { return false }
         return cert.serialNumber == appCertSerial
     }
     private var isActiveGlobal: Bool {
-        cert.serialNumber == CertificateManager.shared.activeCertificate?.serialNumber
+        cert.serialNumber == viewModel.activeSerialNumber
     }
     
-    private var hasPrivateKey: Bool { cert.privateKey != nil }
     private var briefInfo: CertificateBriefInfo? { getBriefInfo(for: cert.data) }
     
     private var statusText: String? {
@@ -93,7 +92,7 @@ struct SignableCertificateRowView: View {
                 
                 (
                     Text("Keys: ").font(.system(size: 10))
-                    + Text(hasPrivateKey ? "public + private" : "public").font(.system(size: 10))
+                    + Text("public + private").font(.system(size: 10))
                 )
                 .foregroundColor(Color(uiColor: .lightGray))
                 
@@ -120,13 +119,19 @@ struct SignableCertificateRowView: View {
 
 final class SignableCertificatesListViewController: UITableViewController {
     let installedApp: InstalledApp
+    let viewModel: CertificatesViewModel
     var onSelectCertificate: ((ALTCertificate) -> Void)?
     
     private var certificates: [ALTCertificate] = []
     
-    init(installedApp: InstalledApp) {
+    init(installedApp: InstalledApp, viewModel: CertificatesViewModel = CertificatesViewModel()) {
         self.installedApp = installedApp
+        self.viewModel = viewModel
+        #if !os(tvOS)
         super.init(style: .insetGrouped)
+        #else
+        super.init(style: .grouped)
+        #endif
     }
     
     required init?(coder: NSCoder) {
@@ -137,17 +142,19 @@ final class SignableCertificatesListViewController: UITableViewController {
         super.viewDidLoad()
         
         self.title = NSLocalizedString("Set Certificate", comment: "")
-        self.certificates = CertificateManager.shared.loadAllSignableLocalCertificates()
+        self.certificates = viewModel.loadAllSignableLocalCertificates()
         
         self.view.backgroundColor = .settingsBackground
         self.tableView.backgroundColor = .settingsBackground
         
+        #if !os(tvOS)
         let appearance = UINavigationBarAppearance()
         appearance.configureWithOpaqueBackground()
         appearance.backgroundColor = .settingsBackground
         appearance.titleTextAttributes = [.foregroundColor: UIColor.white]
         self.navigationItem.standardAppearance = appearance
         self.navigationItem.scrollEdgeAppearance = appearance
+        #endif
         
         self.navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(cancelTapped))
         self.navigationItem.leftBarButtonItem?.tintColor = .white
@@ -160,7 +167,7 @@ final class SignableCertificatesListViewController: UITableViewController {
     }
     
     func present(from presentingViewController: UIViewController) {
-        let signableCerts = CertificateManager.shared.loadAllSignableLocalCertificates()
+        let signableCerts = viewModel.loadAllSignableLocalCertificates()
         
         guard !signableCerts.isEmpty else {
             let alert = UIAlertController(
@@ -174,11 +181,15 @@ final class SignableCertificatesListViewController: UITableViewController {
         }
         
         let nav = UINavigationController(rootViewController: self)
+        #if !os(tvOS)
         nav.modalPresentationStyle = .pageSheet
         if let sheet = nav.sheetPresentationController {
             sheet.detents = [.medium(), .large()]
             sheet.prefersGrabberVisible = true
         }
+        #else
+        nav.modalPresentationStyle = .fullScreen
+        #endif
         presentingViewController.present(nav, animated: true)
     }
     
@@ -192,15 +203,15 @@ final class SignableCertificatesListViewController: UITableViewController {
         let cert = certificates[indexPath.row]
         let isCurrent = (cert.serialNumber == installedApp.certificateSerialNumber)
         
-        debugLog("[SignableCertList] cellForRowAt[\(indexPath.row)]: serial='\(cert.serialNumber)', name='\(cert.name ?? "nil")', machineName='\(cert.machineName ?? "nil")', email='\(cert.requesterEmail ?? "nil")'")
+        debugLog("[SignableCertList] cellForRowAt[\(indexPath.row)]: serial='\(cert.serialNumber)', name='\(cert.name)', machineName='\(cert.machineName ?? "nil")', email='\(cert.requesterEmail ?? "nil")'")
         
-        if #available(iOS 16.0, *) {
+        if #available(iOS 16.0, tvOS 16.0, *) {
             cell.contentConfiguration = UIHostingConfiguration {
-                SignableCertificateRowView(cert: cert, appName: installedApp.name, appCertSerial: installedApp.certificateSerialNumber)
+                SignableCertificateRowView(cert: cert, appName: installedApp.name, appCertSerial: installedApp.certificateSerialNumber, viewModel: viewModel)
             }
             .background(Color.white.opacity(0.15))
         } else {
-            let certName = cert.name ?? "N/A"
+            let certName = cert.name
             let machineName = cert.machineName ?? "N/A"
             let brief = getBriefInfo(for: cert.data)
             let typeStr = brief?.type ?? "N/A"
@@ -214,7 +225,7 @@ final class SignableCertificatesListViewController: UITableViewController {
             Type: \(typeStr)
             Validity: \(validityStr)
             Requester: \(cert.requesterEmail ?? "N/A")
-            Keys: \(cert.privateKey != nil ? "public + private" : "public")
+            Keys: public + private
             """
             cell.textLabel?.textColor = .white
             cell.textLabel?.font = .systemFont(ofSize: 12, weight: .regular)
@@ -230,7 +241,7 @@ final class SignableCertificatesListViewController: UITableViewController {
         tableView.deselectRow(at: indexPath, animated: true)
         let cert = certificates[indexPath.row]
         
-        let contentVC = SetCertificateAlertViewController(installedApp: self.installedApp, certificate: cert)
+        let contentVC = SetCertificateAlertViewController(installedApp: self.installedApp, certificate: cert.x509)
         let confirmAlert = UIAlertController(
             title: NSLocalizedString("Set Certificate Confirmation", comment: ""),
             message: NSLocalizedString("Confirm applying this certificate:", comment: ""),

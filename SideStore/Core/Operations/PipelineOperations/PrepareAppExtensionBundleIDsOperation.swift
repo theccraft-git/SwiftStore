@@ -7,12 +7,15 @@
 //
 
 import Foundation
-import AltStoreCore
 
-final class PrepareAppExtensionBundleIDsOperation: BasePipelineOperation<AppOperationContext, Void>, @unchecked Sendable {
+final class PrepareAppExtensionBundleIDsOperation: BasePipelineOperation<InstallAppOperationContext, Void>, @unchecked Sendable {
     override func execute(parentProgress: Progress?) async throws {
+        let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[PrepareAppExtensionBundleIDsOperation] execute() started")
-        defer { debugLog("[PrepareAppExtensionBundleIDsOperation] execute() completed") }
+        defer {
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            debugLog("[PrepareAppExtensionBundleIDsOperation] execute() took: \(String(format: "%.3fs", elapsed))")
+        }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         
         if self.context.useMainProfile {

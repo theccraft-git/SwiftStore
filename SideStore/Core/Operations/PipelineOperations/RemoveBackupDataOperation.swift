@@ -7,16 +7,19 @@
 //
 
 import Foundation
-@preconcurrency import AltStoreCore
 
-final class RemoveBackupDataOperation: BasePipelineOperation<InstallAppOperationContext, Bool>
+final class RemoveBackupDataOperation: BasePipelineOperation<InstallAppOperationContext, Bool>, @unchecked Sendable
 {
     private let coordinator = NSFileCoordinator()
     private let coordinatorQueue = OperationQueue()
     
     override func execute(parentProgress: Progress?) async throws -> Bool {
+        let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[RemoveBackupDataOperation] execute() started")
-        defer { debugLog("[RemoveBackupDataOperation] execute() completed") }
+        defer {
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            debugLog("[RemoveBackupDataOperation] execute() took: \(String(format: "%.3fs", elapsed))")
+        }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         self.setProgress(10)
         
@@ -29,7 +32,13 @@ final class RemoveBackupDataOperation: BasePipelineOperation<InstallAppOperation
             self.backupDirectoryURL(for: installedApp)
         }
         guard let backupDirectoryURL else {
-            throw OperationError.missingAppGroup
+            throw OperationError.missingAppGroup(name: installedApp.bundleIdentifier)
+        }
+        
+        guard FileManager.default.fileExists(atPath: backupDirectoryURL.path) else {
+            debugLog("[RemoveBackupDataOperation] Backup directory does not exist, nothing to remove: \(backupDirectoryURL.path)")
+            self.setProgress(100)
+            return true
         }
         
         self.setProgress(60)
@@ -49,8 +58,14 @@ final class RemoveBackupDataOperation: BasePipelineOperation<InstallAppOperation
     
     private func removeBackupItem(at url: URL, backupDirectoryURL: URL, coordinatorError: Error?) throws {
         if let coordinatorError { throw coordinatorError }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            debugLog("[RemoveBackupDataOperation] Backup directory does not exist at coordinated URL: \(url.path)")
+            return
+        }
         do {
             try FileManager.default.removeItem(at: url)
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            debugLog("[RemoveBackupDataOperation] Backup directory already absent: \(url.path)")
         } catch {
             debugLog("[RemoveBackupDataOperation] Failed to remove app backup directory \(backupDirectoryURL.lastPathComponent). \(error.localizedDescription)")
             throw error

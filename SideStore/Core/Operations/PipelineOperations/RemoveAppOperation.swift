@@ -8,24 +8,26 @@
 
 import Foundation
 import CoreData
-@preconcurrency import AltStoreCore
 
 final class RemoveAppOperation: BasePipelineOperation<InstallAppOperationContext, InstalledApp>, @unchecked Sendable {
     
     override func execute(parentProgress: Progress?) async throws -> InstalledApp {
+        let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[RemoveAppOperation] execute() started")
-        defer { debugLog("[RemoveAppOperation] execute() completed") }
+        defer {
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            debugLog("[RemoveAppOperation] execute() took: \(String(format: "%.3fs", elapsed))")
+        }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         guard let installedApp = self.context.installedApp else {
             throw OperationError.invalidParameters("RemoveAppOperation: self.context.installedApp is nil")
         }
         
-        guard let backgroundContext = self.context.dbBackgroundContext else {
-            throw OperationError.invalidParameters("RemoveAppOperation: context.dbBackgroundContext is nil")
-        }
+        let backgroundContext = self.context.dbBackgroundContext
         
-        try await backgroundContext.perform {
+        await backgroundContext.perform {
             let installedAppInContext = backgroundContext.object(with: installedApp.objectID) as! InstalledApp
+            CacheResignedMetadataOperation.clearCustomizations(for: installedAppInContext)
             backgroundContext.delete(installedAppInContext)
         }
         

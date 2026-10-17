@@ -8,14 +8,16 @@
 
 @preconcurrency import UIKit
 import SwiftUI
-import SafariServices
+#if !os(tvOS)
 import MessageUI
+#endif
 import Intents
+#if !os(tvOS)
 import IntentsUI
+#endif
 
 import SemanticVersion
-@preconcurrency import AltStoreCore
-@preconcurrency import AltSign
+import SideSign
 import UniformTypeIdentifiers
 
 extension SettingsViewController
@@ -75,12 +77,32 @@ extension SettingsViewController
         case sendFeedback           // row 0 - Send Feedback
         case refreshAttempts        // row 1 - View Refresh Attempts
         case refreshSideJITServer   // row 2 - SideJITServer
-        case resetPairingFile       // row 3 - Reset Pairing File
+        case pairingFileManagement  // row 3 - Pairing File Management
         case anisetteServers        // row 4 - Anisette Servers
         case connectionConfig       // row 5 - Connection Configuration
-        case certificateManagement  // row 6 - Certificate Management
-        case backupAndRestore       // row 7 - Backup & Restore
-        case userCustomizations     // row 8 - User Customizations
+        case networkDiscovery       // row 6 - Network Discovery
+        case developerServices      // row 7 - Developer Portal Services
+        case profileManagement      // row 8 - Profile Management
+        case certificateManagement  // row 9 - Certificate Management
+        case backupAndRestore       // row 10 - Backup & Restore
+        case userCustomizations     // row 11 - User Customizations
+
+        static var allCases: [AdvancedSettingsRow] {
+            var rows: [AdvancedSettingsRow] = [.sendFeedback, .refreshAttempts, .refreshSideJITServer, .pairingFileManagement]
+            if !UserDefaults.standard.useOnDeviceAnisette {
+                rows.append(.anisetteServers)
+            }
+            rows.append(contentsOf: [
+                .connectionConfig,
+                .networkDiscovery,
+                .developerServices,
+                .profileManagement,
+                .certificateManagement,
+                .backupAndRestore,
+                .userCustomizations
+            ])
+            return rows
+        }
     }
 
     private enum BetaTestingRow: Int, CaseIterable {
@@ -97,7 +119,9 @@ extension SettingsViewController
 
 final class SettingsViewController: UITableViewController
 {
-    private var activeTeam: Team?
+    private var activeTeam: ALTTeam?
+    private var accountStatus: AccountVerificationRow.Status = .completed
+    private var accountVerificationTask: Task<Void, Never>?
     
     private var prototypeHeaderFooterView: SettingsHeaderFooterView!
     
@@ -133,9 +157,11 @@ final class SettingsViewController: UITableViewController
     
     @IBOutlet private var recreateDatabaseSwitch: UISwitch!
     
+    #if !os(tvOS)
     override var preferredStatusBarStyle: UIStatusBarStyle {
         return .lightContent
     }
+    #endif
     
     private static var exportDBInProgress = false
     private static var deleteDBInProgress = false
@@ -183,7 +209,13 @@ final class SettingsViewController: UITableViewController
                          options: [.singleSelection, .displayInline], // Add displayInline
                          children: items
         )
+        #if !os(tvOS)
         betaTrackPopupButton.menu = menu
+        #else
+        if #available(tvOS 17.0, *) {
+            betaTrackPopupButton.menu = menu
+        }
+        #endif
 
         // Set initial state
         updateReleaseChannelButtonTitle()
@@ -194,6 +226,7 @@ final class SettingsViewController: UITableViewController
     {
         super.viewDidLoad()
         
+        #if !os(tvOS)
         // --- iOS 26 fix ---
         if #available(iOS 26.0, *) {
             let appearance = UINavigationBarAppearance()
@@ -201,7 +234,8 @@ final class SettingsViewController: UITableViewController
             appearance.largeTitleTextAttributes = [.foregroundColor: UIColor.white]
             navigationController?.navigationBar.standardAppearance = appearance
             navigationController?.navigationBar.scrollEdgeAppearance = appearance       // required for iOS 26, maybe enforce it in storyboard?
-        } 
+        }
+        #endif 
         let nib = UINib(nibName: "SettingsHeaderFooterView", bundle: nil)
         self.prototypeHeaderFooterView = nib.instantiate(withOwner: nil, options: nil)[0] as? SettingsHeaderFooterView
         
@@ -210,11 +244,13 @@ final class SettingsViewController: UITableViewController
         let debugModeGestureRecognizer = UISwipeGestureRecognizer(target: self, action: #selector(SettingsViewController.handleDebugModeGesture(_:)))
         debugModeGestureRecognizer.delegate = self
         debugModeGestureRecognizer.direction = .up
+        #if !os(tvOS)
         debugModeGestureRecognizer.numberOfTouchesRequired = 3
+        #endif
         self.tableView.addGestureRecognizer(debugModeGestureRecognizer)
         
         // set the version label to show in settings screen
-        self.versionLabel.text = getVersionLabel()
+        self.versionLabel.attributedText = getVersionAttributedString()
         self.versionLabel.isUserInteractionEnabled = true
         self.versionLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(copyVersionLabelTapped)))
         
@@ -226,26 +262,25 @@ final class SettingsViewController: UITableViewController
         
         self.update()
         
-        if #available(iOS 15, *)
+        #if !os(tvOS)
+        if let appearance = self.tabBarController?.tabBar.standardAppearance
         {
-            if let appearance = self.tabBarController?.tabBar.standardAppearance
-            {
-                appearance.stackedLayoutAppearance.normal.badgeBackgroundColor = .altPrimary
-                self.navigationController?.tabBarItem.scrollEdgeAppearance = appearance
-            }
+            appearance.stackedLayoutAppearance.normal.badgeBackgroundColor = .altPrimary
+            self.navigationController?.tabBarItem.scrollEdgeAppearance = appearance
+        }
+        #endif
+        
+        // We can only configure the contentMode for a button's background image from Interface Builder.
+        // This works, but it means buttons don't visually highlight because there's no foreground image.
+        // As a workaround, we manually set the foreground image + contentMode here.
+        for button in [self.mastodonButton!, self.threadsButton!, self.twitterButton!, self.githubButton!]
+        {
+            // Get the assigned image from Interface Builder.
+            let image = button.configuration?.background.image
             
-            // We can only configure the contentMode for a button's background image from Interface Builder.
-            // This works, but it means buttons don't visually highlight because there's no foreground image.
-            // As a workaround, we manually set the foreground image + contentMode here.
-            for button in [self.mastodonButton!, self.threadsButton!, self.twitterButton!, self.githubButton!]
-            {
-                // Get the assigned image from Interface Builder.
-                let image = button.configuration?.background.image
-                
-                button.configuration = nil
-                button.setImage(image, for: .normal)
-                button.imageView?.contentMode = .scaleAspectFit
-            }
+            button.configuration = nil
+            button.setImage(image, for: .normal)
+            button.imageView?.contentMode = .scaleAspectFit
         }
         
         configureReleaseChannelButton()
@@ -261,11 +296,20 @@ final class SettingsViewController: UITableViewController
         self.update()
     }
     
+    override func viewWillDisappear(_ animated: Bool)
+    {
+        super.viewWillDisappear(animated)
+        self.accountVerificationTask?.cancel()
+    }
+    
     override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
-        if segue.identifier == "anisetteServers" || segue.identifier == "certificateManagement" || segue.identifier == "diagnostics" {
+        if segue.identifier == "anisetteServers" || segue.identifier == "developerServices" || segue.identifier == "profileManagement" || segue.identifier == "certificateManagement" || segue.identifier == "diagnostics" {
             let controller = segue.destination
             
+        #if !os(tvOS)
             if segue.identifier == "anisetteServers"        || 
+                segue.identifier == "developerServices"      ||
+                segue.identifier == "profileManagement"      ||
                 segue.identifier == "certificateManagement" || 
                 segue.identifier == "diagnostics"
             {
@@ -277,6 +321,7 @@ final class SettingsViewController: UITableViewController
                 controller.navigationItem.standardAppearance = appearance
                 controller.navigationItem.scrollEdgeAppearance = appearance
             }
+        #endif
             
             // disable bottom tab bar since 'back' button is already available
 //            controller.hidesBottomBarWhenPushed = true
@@ -293,86 +338,94 @@ final class SettingsViewController: UITableViewController
 private extension SettingsViewController
 {
     
-    private func getVersionLabel() -> String {
-        let buildInfo = BuildInfo()
+    private func getVersionAttributedString() -> NSAttributedString {
+        let appVersion = Bundle.Info.activeBundleVersion
+        let iosVersion = "iOS \(UIDevice.current.systemVersion) (\(ProcessInfo.processInfo.operatingSystemBuild))"
         
-        func getXcodeVersion() -> String {
-            var xcodeVersion =  buildInfo.xcode.map { version in
-                "Xcode \(version)" + (buildInfo.xcode_revision.map { revision in " - \(revision)" } ?? "")       // Ex: "0.6.0 - Xcode 16.2 - 21ac1ef"
-            } ?? ""
-
-            if let pairing = Bundle.main.object(forInfoDictionaryKey: "ALTPairingFile") as? String,
-                pairing != "<insert pairing file here>"{
-                xcodeVersion += " - true"
-            }
-            return xcodeVersion
-        }
-
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .center
+        paragraphStyle.lineSpacing = 4
         
-        var versionLabel: String = ""
-        let installedApp = InstalledApp.fetchAltStore(in: DatabaseManager.shared.viewContext)
-        // first check if there is installed app entity, if so, get version info from that
-        if let installedApp
-        {
-            var localizedVersion = installedApp.version
-            // Only show build version for non stable builds.
-            localizedVersion += buildInfo.project_version.map{ version in
-                version.isEmpty  ? "" : " (\(version))"
-            } ?? installedApp.localizedVersion
+        let fullString = NSMutableAttributedString()
         
-            versionLabel = NSLocalizedString(String(format: "Version %@", localizedVersion), comment: "SideStore Version")
-        }
-        else if let version = buildInfo.marketing_version
-        {
-            versionLabel = NSLocalizedString(String(format: "Version %@", version), comment: "SideStore Version")
-        }
-        else
-        {
-            var version = "SideStore\t"
-            version += "\n\(Bundle.Info.appbundleIdentifier)"
-            versionLabel = NSLocalizedString(version, comment: "SideStore Version")
-        }
+        let appVersionAttr = NSAttributedString(
+            string: appVersion,
+            attributes: [
+                .font: UIFont.systemFont(ofSize: 14),
+                .foregroundColor: UIColor.white.withAlphaComponent(0.7),
+                .paragraphStyle: paragraphStyle
+            ]
+        )
         
-        // add xcode build version for local builds
-        if let installedApp,
-           SemanticVersion(installedApp.version)?.preRelease == "local"
-        {
-            versionLabel += "\n\(getXcodeVersion())"
-        }
+        let iosVersionAttr = NSAttributedString(
+            string: "\n" + iosVersion,
+            attributes: [
+                .font: UIFont.systemFont(ofSize: 12),
+                .foregroundColor: UIColor.white.withAlphaComponent(0.5),
+                .paragraphStyle: paragraphStyle
+            ]
+        )
         
-        return versionLabel
+        fullString.append(appVersionAttr)
+        fullString.append(iosVersionAttr)
+        return fullString
     }
     
     @objc private func copyVersionLabelTapped() {
-        let text = self.versionLabel.text ?? ""
-        UIPasteboard.general.string = text.hasPrefix("Version ") ? String(text.dropFirst("Version ".count)) : text
-        let original = self.versionLabel.text
-        let attributed = NSMutableAttributedString(string: "Copied! ")
-        attributed.append(NSAttributedString(string: "✓", attributes: [.foregroundColor: UIColor.systemGreen]))
+        let appVersion = Bundle.Info.activeBundleVersion
+        let iosVersion = "iOS \(UIDevice.current.systemVersion) (\(ProcessInfo.processInfo.operatingSystemBuild))"
+        let fullText = "\(appVersion)\n\(iosVersion)"
+        #if !os(tvOS)
+        UIPasteboard.general.string = fullText.hasPrefix("Version ") ? String(fullText.dropFirst("Version ".count)) : fullText
+        #endif
+        
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .center
+        let attributed = NSMutableAttributedString(
+            string: "Copied! ",
+            attributes: [
+                .font: UIFont.systemFont(ofSize: 14),
+                .foregroundColor: UIColor.white.withAlphaComponent(0.7),
+                .paragraphStyle: paragraphStyle
+            ]
+        )
+        attributed.append(NSAttributedString(string: "✓", attributes: [
+            .font: UIFont.systemFont(ofSize: 14),
+            .foregroundColor: UIColor.systemGreen
+        ]))
         self.versionLabel.attributedText = attributed
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.versionLabel.attributedText = nil
-            self?.versionLabel.text = original
+            self?.versionLabel.attributedText = self?.getVersionAttributedString()
         }
     }
     
     
     func update()
     {
-        let currentActiveTeam = DatabaseManager.shared.activeTeam()
-        debugLog("[SettingsVC] update() called. activeTeam: \(currentActiveTeam?.identifier ?? "nil"), account: \(currentActiveTeam?.account.appleID ?? "nil")")
-        
-        if let team = currentActiveTeam
-        {
-            self.accountNameLabel.text = team.name
-            self.accountEmailLabel.text = team.account.appleID
-            self.accountTypeLabel.text = team.type.localizedDescription
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            let currentActiveTeam = try? await AuthManager.shared.getAuthenticatedTeam()
+            let appleID = AuthManager.shared.currentAppleID
+            verboseLog("[SettingsVC] update() called. activeTeam: \(currentActiveTeam?.identifier ?? "nil"), account: \(appleID ?? "nil")")
             
-            self.activeTeam = team
-        }
-        else
-        {
-            self.activeTeam = nil
+            if let team = currentActiveTeam, AuthManager.shared.isAuthenticated
+            {
+                self.accountNameLabel.text = team.name
+                self.accountEmailLabel.text = appleID
+                self.accountTypeLabel.text = team.type.localizedDescription
+                
+                self.activeTeam = team
+                self.startAccountVerification(for: team)
+            }
+            else
+            {
+                self.activeTeam = nil
+                self.accountVerificationTask?.cancel()
+                self.accountVerificationTask = nil
+                self.accountStatus = .completed
+                self.updateAccountCardRowStyles()
+            }
+            self.tableView.reloadData()
         }
         
         // AppRefreshRow
@@ -396,6 +449,44 @@ private extension SettingsViewController
         if self.isViewLoaded
         {
             self.tableView.reloadData()
+        }
+    }
+    
+    private func startAccountVerification(for team: ALTTeam)
+    {
+        self.accountVerificationTask?.cancel()
+        self.accountVerificationTask = Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            if !UserDefaults.standard.isDeviceRegistered {
+                self.accountStatus = .checking
+                self.tableView.reloadData()
+                self.updateAccountCardRowStyles()
+            }
+            let status = await AccountVerificationRow.verifyStatus(for: team)
+            if !Task.isCancelled {
+                self.accountStatus = status
+                self.tableView.reloadData()
+                self.updateAccountCardRowStyles()
+            }
+        }
+    }
+    
+    private func updateAccountCardRowStyles()
+    {
+        guard self.isViewLoaded else { return }
+        let typeIndexPath = IndexPath(row: 2, section: Section.account.rawValue)
+        if let typeCell = self.tableView.cellForRow(at: typeIndexPath) as? InsetGroupTableViewCell {
+            typeCell.style = (self.accountStatus == .completed) ? .bottom : .middle
+        }
+    }
+    
+    private func resolvePendingAccountActions()
+    {
+        guard let team = self.activeTeam else { return }
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            await AccountVerificationRow.resolvePendingActions(for: self.accountStatus, team: team, presentingViewController: self)
+            self.startAccountVerification(for: team)
         }
     }
     
@@ -540,27 +631,21 @@ private extension SettingsViewController
     func signIn()
     {
         debugLog("[SettingsVC] signIn() invoked by user action")
-        AppManager.shared.authenticate(presentingViewController: self) { [weak self] (result) in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                switch result
-                {
-                case .failure(let error) where error is CancellationError:
-                    debugLog("[SettingsVC] signIn() authentication cancelled by user")
-                    break
-                    
-                case .failure(let error):
-                    debugLog("[SettingsVC] signIn() authentication failed with error: \(error)")
-                    let toastView = ToastView(error: error)
-                    toastView.show(in: self.view)
-                    
-                case .success(let (team, _, _)):
-                    debugLog("[SettingsVC] signIn() authentication succeeded for team: \(team.name) (\(team.identifier))")
-                }
-                
-                debugLog("[SettingsVC] signIn() calling update()...")
-                self.update()
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            do {
+                let result = try await AuthManager.shared.signIn(presentingViewController: self)
+                debugLog("[SettingsVC] signIn() authentication succeeded for team: \(result.team.name) (\(result.team.identifier))")
+            } catch is CancellationError {
+                debugLog("[SettingsVC] signIn() authentication cancelled by user")
+            } catch {
+                debugLog("[SettingsVC] signIn() authentication failed with error: \(error)")
+                let toastView = ToastView(error: error)
+                toastView.show(in: self.view)
             }
+            
+            debugLog("[SettingsVC] signIn() calling update()...")
+            self.update()
         }
     }
     
@@ -579,18 +664,20 @@ private extension SettingsViewController
         
         let cancelAction = UIAlertAction(title: NSLocalizedString("Cancel", comment: ""), style: .cancel, handler: nil)
         
-        let signOutAction = UIAlertAction(title: NSLocalizedString("Sign Out", comment: ""), style: .destructive) { _ in
+        let signOutAction = UIAlertAction(title: NSLocalizedString("Sign Out", comment: ""), style: .destructive) { [weak self] _ in
             let keepCert = contentVC.isChecked
             let keepAnisette = contentVC.isKeepAnisetteChecked
-            DatabaseManager.shared.signOut(keepCertificate: keepCert, keepAnisetteData: keepAnisette) { (error) in
-                DispatchQueue.main.async {
-                    if let error = error
-                    {
-                        let toastView = ToastView(error: error)
-                        toastView.show(in: self)
-                    }
-                    
-                    self.update()
+            let keepAnisetteHeaders = contentVC.isKeepAnisetteHeadersChecked
+            let keepSideSignHeaders = contentVC.isKeepSideSignHeadersChecked
+            Task.detached { [weak self] in
+                await AuthManager.shared.signOut(
+                    keepCertificate: keepCert,
+                    keepAnisetteData: keepAnisette,
+                    keepAnisetteHeaders: keepAnisetteHeaders,
+                    keepSideSignHeaders: keepSideSignHeaders
+                )
+                await MainActor.run {
+                    self?.update()
                 }
             }
         }
@@ -691,6 +778,7 @@ private extension SettingsViewController
         UserDefaults.standard.responseCachingDisabled = sender.isOn
     }
     
+    #if !os(tvOS)
     func addRefreshAppsShortcut()
     {
         guard let shortcut = INShortcut(intent: INInteraction.refreshAllApps().intent) else { return }
@@ -700,6 +788,7 @@ private extension SettingsViewController
         viewController.modalPresentationStyle = .formSheet
         self.present(viewController, animated: true, completion: nil)
     }
+    #endif
     
     func clearCache()
     {
@@ -778,10 +867,7 @@ private extension SettingsViewController
             else
             {
                 let safariURL = URL(string: "https://twitter.com/" + username)!
-                
-                let safariViewController = SFSafariViewController(url: safariURL)
-                safariViewController.preferredControlTintColor = .altPrimary
-                self.present(safariViewController, animated: true, completion: nil)
+                self.openWebURL(safariURL, preferredTintColor: .altPrimary)
             }
         }
     }
@@ -827,8 +913,7 @@ private extension SettingsViewController
     
     @IBAction func followAltStoreGitHub()
     {
-        let safariURL = URL(string: "https://github.com/SideStore")!
-        UIApplication.shared.open(safariURL, options: [:])
+        UIApplication.shared.open(AppConstants.URLs.sideStoreGitHub, options: [:])
     }
 }
 
@@ -870,7 +955,46 @@ extension SettingsViewController
     
     override func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat
     {
-        return super.tableView(tableView, heightForRowAt: indexPath)
+        if Section.allCases[indexPath.section] == .account && indexPath.row == 3 {
+            return AccountVerificationRow.preferredHeight
+        }
+        let effectiveIndexPath: IndexPath
+        if Section.allCases[indexPath.section] == .advancedSettings {
+            let row = AdvancedSettingsRow.allCases[indexPath.row]
+            effectiveIndexPath = IndexPath(row: row.rawValue, section: indexPath.section)
+        } else {
+            effectiveIndexPath = indexPath
+        }
+        return super.tableView(tableView, heightForRowAt: effectiveIndexPath)
+    }
+
+    override func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath)
+    {
+        if Section.allCases[indexPath.section] == .account {
+            if indexPath.row == 2, let insetCell = cell as? InsetGroupTableViewCell {
+                insetCell.style = (self.accountStatus == .completed) ? .bottom : .middle
+            } else if indexPath.row == 3, let actionCell = cell as? AccountVerificationRow {
+                actionCell.style = .bottom
+                actionCell.backgroundColor = .clear
+                actionCell.contentView.backgroundColor = .clear
+                actionCell.backgroundConfiguration = .clear()
+            }
+        }
+    }
+
+    override func tableView(_ tableView: UITableView, indentationLevelForRowAt indexPath: IndexPath) -> Int
+    {
+        if Section.allCases[indexPath.section] == .account && indexPath.row == 3 {
+            return 0
+        }
+        let effectiveIndexPath: IndexPath
+        if Section.allCases[indexPath.section] == .advancedSettings {
+            let row = AdvancedSettingsRow.allCases[indexPath.row]
+            effectiveIndexPath = IndexPath(row: row.rawValue, section: indexPath.section)
+        } else {
+            effectiveIndexPath = indexPath
+        }
+        return super.tableView(tableView, indentationLevelForRowAt: effectiveIndexPath)
     }
     
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int
@@ -880,7 +1004,7 @@ extension SettingsViewController
         {
         case _ where isSectionHidden(section): return 0
         case .signIn: return (self.activeTeam == nil) ? 1 : 0
-        case .account: return (self.activeTeam == nil) ? 0 : 3
+        case .account: return (self.activeTeam == nil) ? 0 : (self.accountStatus == .completed ? 3 : 4)
         case .appRefresh: return AppRefreshRow.allCases.count
         case .advancedSettings: return AdvancedSettingsRow.allCases.count
         default: return super.tableView(tableView, numberOfRowsInSection: section.rawValue)
@@ -889,17 +1013,32 @@ extension SettingsViewController
     
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell
     {
-        let cell = super.tableView(tableView, cellForRowAt: indexPath)
-        
-        if #available(iOS 14, *) {}
-        else if let cell = cell as? InsetGroupTableViewCell,
-                indexPath.section == Section.appRefresh.rawValue,
-                indexPath.row == AppRefreshRow.backgroundRefresh.rawValue
-        {
-            // Only one row is visible pre-iOS 14.
-            cell.style = .single
+        if Section.allCases[indexPath.section] == .account && indexPath.row == 3 {
+            let cell = tableView.dequeueReusableCell(withIdentifier: AccountVerificationRow.reuseIdentifier) as? AccountVerificationRow
+                ?? AccountVerificationRow()
+            cell.configure(with: self.accountStatus)
+            cell.style = .bottom
+            return cell
         }
         
+        let effectiveIndexPath: IndexPath
+        if Section.allCases[indexPath.section] == .advancedSettings {
+            let row = AdvancedSettingsRow.allCases[indexPath.row]
+            effectiveIndexPath = IndexPath(row: row.rawValue, section: indexPath.section)
+        } else {
+            effectiveIndexPath = indexPath
+        }
+        let cell = super.tableView(tableView, cellForRowAt: effectiveIndexPath)
+        
+        if Section.allCases[indexPath.section] == .account {
+            if indexPath.row == 2 {
+                if let insetCell = cell as? InsetGroupTableViewCell {
+                    insetCell.style = (self.accountStatus == .completed) ? .bottom : .middle
+                }
+            }
+        }
+        
+
         if AppRefreshRow.AllCases().count == 1
         {
             if let cell = cell as? InsetGroupTableViewCell,
@@ -994,10 +1133,15 @@ extension SettingsViewController
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath)
     {
         let section = Section.allCases[indexPath.section]
-        debugLog("[SettingsVC] didSelectRowAt: section \(section) (index \(indexPath.section)), row \(indexPath.row)")
+        verboseLog("[SettingsVC] didSelectRowAt: section \(section) (index \(indexPath.section)), row \(indexPath.row)")
         switch section
         {
         case .signIn: self.signIn()
+        case .account:
+            if indexPath.row == 3 {
+                tableView.deselectRow(at: indexPath, animated: true)
+                self.resolvePendingAccountActions()
+            }
         case .appRefresh:
             let row = AppRefreshRow.allCases[indexPath.row]
             switch row
@@ -1007,7 +1151,9 @@ extension SettingsViewController
             case .disableAppLimit: break
             case .addToSiri:
 //                guard #available(iOS 14, *) else { return }   // our min deployment is iOS 15 now :) so commented out
+                #if !os(tvOS)
                 self.addRefreshAppsShortcut()
+                #endif
             }
             
         case .techyThings:
@@ -1018,10 +1164,12 @@ extension SettingsViewController
                 let healthCheckView = HealthCheckView()
                 let vc = UIHostingController(rootView: healthCheckView)
                 
+                #if !os(tvOS)
                 let appearance = UINavigationBarAppearance()
                 appearance.configureWithDefaultBackground()
                 vc.navigationItem.scrollEdgeAppearance = appearance
                 vc.navigationItem.standardAppearance = appearance
+                #endif
                 
                 navigationController?.pushViewController(vc, animated: true)
                 
@@ -1077,22 +1225,15 @@ extension SettingsViewController
                 
                 // Option 1: GitHub
                 alertController.addAction(UIAlertAction(title: "GitHub", style: .default) { _ in
-                    if let githubURL = URL(string: "https://github.com/SideStore/SideStore/issues") {
-                        let safariViewController = SFSafariViewController(url: githubURL)
-                        safariViewController.preferredControlTintColor = .altPrimary
-                        self.present(safariViewController, animated: true, completion: nil)
-                    }
+                    self.openWebURL(AppConstants.URLs.sideStoreIssues, preferredTintColor: .altPrimary)
                 })
                 
                 // Option 2: Discord
                 alertController.addAction(UIAlertAction(title: "Discord", style: .default) { _ in
-                    if let discordURL = URL(string: "https://discord.gg/sidestore-949183273383395328") {
-                        let safariViewController = SFSafariViewController(url: discordURL)
-                        safariViewController.preferredControlTintColor = .altPrimary
-                        self.present(safariViewController, animated: true, completion: nil)
-                    }
+                    self.openWebURL(AppConstants.URLs.sideStoreDiscord, preferredTintColor: .altPrimary)
                 })
                 
+                #if !os(tvOS)
                 // Option 3: Mail
                 alertController.addAction(UIAlertAction(title: "Send Email", style: .default) { _ in
                     if MFMailComposeViewController.canSendMail() {
@@ -1113,6 +1254,7 @@ extension SettingsViewController
                       toastView.show(in: self)
                     }
                 })
+                #endif
                 
                 // Cancel action
                 alertController.addAction(UIAlertAction(title: "Cancel", style: .cancel, handler: nil))
@@ -1127,123 +1269,27 @@ extension SettingsViewController
                 self.present(alertController, animated: true, completion: nil)
                 
             case .refreshSideJITServer:
-                if #available(iOS 17, *) {
+                let jitConfigView = SideJITServerConfigView()
+                let vc = UIHostingController(rootView: jitConfigView)
+                #if !os(tvOS)
+                let appearance = UINavigationBarAppearance()
+                appearance.configureWithDefaultBackground()
+                vc.navigationItem.scrollEdgeAppearance = appearance
+                vc.navigationItem.standardAppearance = appearance
+                #endif
+                self.navigationController?.pushViewController(vc, animated: true)
+                self.tableView.deselectRow(at: indexPath, animated: true)
                 
-                   let alertController = UIAlertController(
-                      title: NSLocalizedString("SideJITServer", comment: ""),
-                      message: NSLocalizedString("Settings for SideJITServer", comment: ""),
-                      preferredStyle: UIAlertController.Style.actionSheet)
-                    
-                    
-                    if UserDefaults.standard.sidejitenable {
-                        alertController.addAction(UIAlertAction(title: NSLocalizedString("Disable", comment: ""), style: .default){ _ in
-                            UserDefaults.standard.sidejitenable = false
-                        })
-                    } else {
-                        alertController.addAction(UIAlertAction(title: NSLocalizedString("Enable", comment: ""), style: .default){ _ in
-                            UserDefaults.standard.sidejitenable = true
-                        })
-                    }
-                    
-                    alertController.addAction(UIAlertAction(title: NSLocalizedString("Server Address", comment: ""), style: .default){ _ in
-                        let alertController1 = UIAlertController(title: "SideJITServer Address", message: "Please Enter the SideJITServer Address Below. (this is not needed if SideJITServer has already been detected)", preferredStyle: .alert)
-                        
-
-                        alertController1.addTextField { textField in
-                            textField.placeholder = "SideJITServer Address"
-                        }
-                        
-                        
-                        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel, handler: nil)
-                        alertController1.addAction(cancelAction)
-                        
-
-                        let okAction = UIAlertAction(title: "OK", style: .default) { _ in
-                            if let text = alertController1.textFields?.first?.text {
-                                UserDefaults.standard.textInputSideJITServerurl = text
-                            }
-                        }
-                        
-                        alertController1.addAction(okAction)
-                        
-                        // Present the alert controller
-                        self.present(alertController1, animated: true)
-                    })
-                    
-
-                   alertController.addAction(UIAlertAction(title: NSLocalizedString("Refresh", comment: ""), style: .destructive){ _ in
-                      if UserDefaults.standard.sidejitenable {
-                         var SJSURL = ""
-                          if (UserDefaults.standard.textInputSideJITServerurl ?? "").isEmpty {
-                            SJSURL = "http://sidejitserver._http._tcp.local:8080"
-                         } else {
-                            SJSURL = UserDefaults.standard.textInputSideJITServerurl ?? ""
-                         }
-                        
-                          
-                         let url = URL(string: SJSURL + "/re/")!
-
-                         let task = URLSession.shared.dataTask(with: url) { (data, response, error) in
-                            if let error = error {
-                               debugLog("Error: \(error)")
-                            } else {
-                               // Do nothing with data or response
-                            }
-                         }
-
-                         task.resume()
-                      }
-                   })
-                    
-
-                   let cancelAction = UIAlertAction(title: "Cancel", style: .cancel, handler: nil)
-                   alertController.addAction(cancelAction)
-                   //Fix crash on iPad
-                   alertController.popoverPresentationController?.sourceView = self.tableView
-                   alertController.popoverPresentationController?.sourceRect = self.tableView.rectForRow(at: indexPath)
-                   self.present(alertController, animated: true)
-                   self.tableView.deselectRow(at: indexPath, animated: true)
-                } else {
-                   let alertController = UIAlertController(
-                      title: NSLocalizedString("You are not on iOS 17+ This will not work", comment: ""),
-                      message: NSLocalizedString("This is meant for 'SideJITServer' and it only works on iOS 17+ ", comment: ""),
-                      preferredStyle: UIAlertController.Style.actionSheet)
-
-                   alertController.addAction(.cancel)
-                   //Fix crash on iPad
-                   alertController.popoverPresentationController?.sourceView = self.tableView
-                   alertController.popoverPresentationController?.sourceRect = self.tableView.rectForRow(at: indexPath)
-                   self.present(alertController, animated: true)
-                   self.tableView.deselectRow(at: indexPath, animated: true)
-                }
-                
-            case .resetPairingFile:
-                
-                let filename = "ALTPairingFile.mobiledevicepairing"
-                
-                let fm = FileManager.default
-                
-                let documentsPath = fm.documentsDirectory.appendingPathComponent("/\(filename)")
-                let alertController = UIAlertController(
-                    title: NSLocalizedString("Are you sure to reset the pairing file?", comment: ""),
-                    message: NSLocalizedString("You can reset the pairing file when you cannot sideload apps or enable JIT. You need to restart SideStore.", comment: ""),
-                    preferredStyle: UIAlertController.Style.actionSheet)
-                
-                alertController.addAction(UIAlertAction(title: NSLocalizedString("Delete and Reset", comment: ""), style: .destructive){ _ in
-                    if fm.fileExists(atPath: documentsPath.path), let contents = try? String(contentsOf: documentsPath), !contents.isEmpty {
-                        UserDefaults.standard.isPairingReset = true
-                        try? fm.removeItem(atPath: documentsPath.path)
-                        NSLog("Pairing File Reseted")
-                    }
-                    self.tableView.deselectRow(at: indexPath, animated: true)
-                    let dialogMessage = UIAlertController(title: NSLocalizedString("Pairing File Reset", comment: ""), message: NSLocalizedString("Please restart SideStore", comment: ""), preferredStyle: .alert)
-                    self.present(dialogMessage, animated: true, completion: nil)
-                })
-                alertController.addAction(.cancel)
-                //Fix crash on iPad
-                alertController.popoverPresentationController?.sourceView = self.tableView
-                alertController.popoverPresentationController?.sourceRect = self.tableView.rectForRow(at: indexPath)
-                self.present(alertController, animated: true)
+            case .pairingFileManagement:
+                let pairingView = PairingFileManagementView()
+                let vc = UIHostingController(rootView: pairingView)
+                #if !os(tvOS)
+                let appearance = UINavigationBarAppearance()
+                appearance.configureWithDefaultBackground()
+                vc.navigationItem.scrollEdgeAppearance = appearance
+                vc.navigationItem.standardAppearance = appearance
+                #endif
+                self.navigationController?.pushViewController(vc, animated: true)
                 self.tableView.deselectRow(at: indexPath, animated: true)
                 
             case .anisetteServers:
@@ -1263,12 +1309,31 @@ extension SettingsViewController
                 let connectionConfigView = ConnectionConfigView()
                 let vc = UIHostingController(rootView: connectionConfigView)
 
+                #if !os(tvOS)
                 let appearance = UINavigationBarAppearance()
                 appearance.configureWithDefaultBackground()   // gives solid background
                 vc.navigationItem.scrollEdgeAppearance = appearance
                 vc.navigationItem.standardAppearance = appearance
+                #endif
 
                 navigationController?.pushViewController(vc, animated: true)
+
+            case .networkDiscovery:
+                let discoveryView = BonjourDiscoveryView()
+                let vc = UIHostingController(rootView: discoveryView)
+                vc.view.backgroundColor = .settingsBackground
+                vc.title = NSLocalizedString("Network Discovery", comment: "")
+                self.prepare(for: UIStoryboardSegue(identifier: "diagnostics", source: self, destination: vc), sender: nil)
+
+            case .developerServices:
+                let developerServicesView = DeveloperServicesView(presentingViewController: self)
+                let vc = UIHostingController(rootView: developerServicesView)
+                self.prepare(for: UIStoryboardSegue(identifier: "developerServices", source: self, destination: vc), sender: nil)
+
+            case .profileManagement:
+                let profileManagementView = ProfileManagementView(presentingViewController: self)
+                let vc = UIHostingController(rootView: profileManagementView)
+                self.prepare(for: UIStoryboardSegue(identifier: "profileManagement", source: self, destination: vc), sender: nil)
 
             case .certificateManagement:
                 let certificateManagementView = CertificatesView(presentingViewController: self)
@@ -1278,24 +1343,16 @@ extension SettingsViewController
             case .backupAndRestore:
                 let backupView = BackupAndRestoreView()
                 let vc = UIHostingController(rootView: backupView)
-                
-                let appearance = UINavigationBarAppearance()
-                appearance.configureWithDefaultBackground()
-                vc.navigationItem.scrollEdgeAppearance = appearance
-                vc.navigationItem.standardAppearance = appearance
-                
-                navigationController?.pushViewController(vc, animated: true)
+                vc.view.backgroundColor = .settingsBackground
+                vc.title = NSLocalizedString("Backup & Restore", comment: "")
+                self.prepare(for: UIStoryboardSegue(identifier: "diagnostics", source: self, destination: vc), sender: nil)
                 
             case .userCustomizations:
                 let userCustomizationsView = UserCustomizationsView()
                 let vc = UIHostingController(rootView: userCustomizationsView)
-                
-                let appearance = UINavigationBarAppearance()
-                appearance.configureWithDefaultBackground()
-                vc.navigationItem.scrollEdgeAppearance = appearance
-                vc.navigationItem.standardAppearance = appearance
-                
-                navigationController?.pushViewController(vc, animated: true)
+                vc.view.backgroundColor = .settingsBackground
+                vc.title = NSLocalizedString("User Customizations", comment: "")
+                self.prepare(for: UIStoryboardSegue(identifier: "diagnostics", source: self, destination: vc), sender: nil)
                 
             case .refreshAttempts: break
             }
@@ -1319,7 +1376,7 @@ extension SettingsViewController
             
             
         // case .account, .patreon, .display, .instructions, .macDirtyCow: break
-        case .account, .patreon, .display, .instructions, .betaTesting: break
+        case .patreon, .display, .instructions, .betaTesting: break
         }
         
         
@@ -1328,6 +1385,7 @@ extension SettingsViewController
     }
 }
 
+#if !os(tvOS)
 extension SettingsViewController: MFMailComposeViewControllerDelegate
 {
     func mailComposeController(_ controller: MFMailComposeViewController, didFinishWith result: MFMailComposeResult, error: Error?)
@@ -1341,6 +1399,7 @@ extension SettingsViewController: MFMailComposeViewControllerDelegate
         controller.dismiss(animated: true, completion: nil)
     }
 }
+#endif
 
 extension SettingsViewController: UIGestureRecognizerDelegate
 {
@@ -1350,6 +1409,7 @@ extension SettingsViewController: UIGestureRecognizerDelegate
     }
 }
 
+#if !os(tvOS)
 extension SettingsViewController: INUIAddVoiceShortcutViewControllerDelegate
 {
     func addVoiceShortcutViewController(_ controller: INUIAddVoiceShortcutViewController, didFinishWith voiceShortcut: INVoiceShortcut?, error: Error?)
@@ -1377,3 +1437,4 @@ extension SettingsViewController: INUIAddVoiceShortcutViewControllerDelegate
         controller.dismiss(animated: true, completion: nil)
     }
 }
+#endif

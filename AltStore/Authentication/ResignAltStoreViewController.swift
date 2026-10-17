@@ -7,17 +7,17 @@
 //
 
 @preconcurrency import UIKit
-@preconcurrency import AltStoreCore
-@preconcurrency import AltSign
+import SideSign
 
 final class ResignAltStoreViewController: UIViewController
 {
-    var context: AuthenticatedOperationContext!
+    var context: StandaloneOperationContext!
     var mismatchReason: CodeSignValidationReason?
+    var isFreeTeam: Bool = false
     
     var completionHandler: ((Result<Void, Error>) -> Void)?
     
-    @IBOutlet private var placeholderView: RSTPlaceholderView!
+    @IBOutlet private var placeholderView: PlaceholderView!
     @IBOutlet private var reinstallButton: PillButton!
     
     override func viewDidLoad()
@@ -29,7 +29,8 @@ final class ResignAltStoreViewController: UIViewController
         self.placeholderView.detailTextLabel.textAlignment = .left
         self.placeholderView.detailTextLabel.textColor = UIColor.white.withAlphaComponent(0.6)
         
-        let reason = self.mismatchReason ?? (self.context?.team?.type == .free ? .freeAccountLimitRevoked : .revoked)
+        let isFreeTeam = self.isFreeTeam
+        let reason = self.mismatchReason ?? (isFreeTeam ? .freeAccountLimitRevoked : .revoked)
         debugLog("[ResignAltStoreViewController] Displaying Resign SideStore Now screen (mismatchReason: \(reason)).")
         let reasonText: String
         
@@ -48,8 +49,10 @@ final class ResignAltStoreViewController: UIViewController
                 reasonText = NSLocalizedString("The private key for the active signing certificate is missing from this device's keychain.", comment: "")
             case .externalSigner:
                 reasonText = NSLocalizedString("SideStore was installed by a different signing tool (like Xcode or AltStore).", comment: "")
-            case .corruptProfile:
-                reasonText = NSLocalizedString("The provisioning profile for SideStore is corrupt or missing.", comment: "")
+            case .missingProfile:
+                reasonText = NSLocalizedString("The provisioning profile for SideStore is missing or invalid.", comment: "")
+            case .missingCertificate:
+                reasonText = NSLocalizedString("The signing certificate could not be extracted from SideStore's binary.", comment: "")
         }
         
         let isRevocationExpected = (reason == .privateKeyLost || reason == .freeAccountLimitRevoked)
@@ -132,7 +135,7 @@ private extension ResignAltStoreViewController
             }
                         
             // Install, _not_ refresh, to ensure we are installing with a non-revoked certificate.
-            let group = AppManager.shared.install(altStore, presentingViewController: self, context: self.context) { (result) in
+            let group = AppManager.shared.install(.app(altStore), presentingViewController: self, context: self.context) { (result) in
                 switch result
                 {
                 case .success: self.completionHandler?(.success(()))

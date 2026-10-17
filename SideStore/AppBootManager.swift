@@ -7,180 +7,142 @@
 //
 
 import Foundation
-@preconcurrency import AltStoreCore
+import UIKit
+import Minimuxer
 
 public final class AppBootManager {
     public static let shared = AppBootManager()
     
     private let lock = NSLock()
     
-    private var _isMinimuxerStarted = false
-    public var isMinimuxerStarted: Bool {
-        get { lock.withLock { _isMinimuxerStarted } }
-        set { lock.withLock { _isMinimuxerStarted = newValue } }
-    }
-    
-    private var _needsPairingPrompt = false
+    private var cachedNeedsPairingPrompt = false
     public var needsPairingPrompt: Bool {
-        get { lock.withLock { _needsPairingPrompt } }
-        set { lock.withLock { _needsPairingPrompt = newValue } }
+        get { lock.withLock { cachedNeedsPairingPrompt } }
+        set { lock.withLock { cachedNeedsPairingPrompt = newValue } }
     }
     
-    private var _needsSideJITPrompt = false
+    private var cachedNeedsSideJITPrompt = false
     public var needsSideJITPrompt: Bool {
-        get { lock.withLock { _needsSideJITPrompt } }
-        set { lock.withLock { _needsSideJITPrompt = newValue } }
+        get { lock.withLock { cachedNeedsSideJITPrompt } }
+        set { lock.withLock { cachedNeedsSideJITPrompt = newValue } }
     }
     
     private init() {}
     
-    public nonisolated func getSavedPairingFile() -> String? {
-        let fm = FileManager.default
-        let pairingFileName = "ALTPairingFile.mobiledevicepairing"
-        let documentsPath = fm.documentsDirectory.appendingPathComponent(pairingFileName)
-        if fm.fileExists(atPath: documentsPath.path),
-           let contents = try? String(contentsOf: documentsPath), !contents.isEmpty {
-            return contents
-        }
-        if let url = Bundle.main.url(forResource: "ALTPairingFile", withExtension: "mobiledevicepairing"),
-           fm.fileExists(atPath: url.path),
-           let data = fm.contents(atPath: url.path),
-           let contents = String(data: data, encoding: .utf8),
-           !contents.isEmpty, !UserDefaults.standard.isPairingReset { return contents }
-        if let plistString = Bundle.main.object(forInfoDictionaryKey: "ALTPairingFile") as? String,
-           !plistString.isEmpty, !plistString.contains("insert pairing file here"), !UserDefaults.standard.isPairingReset { return plistString }
-        return nil
-    }
-    
+
     public nonisolated func startMinimuxer(pairingFile: String) async throws {
         debugLog("[AppBootManager] startMinimuxer() entered")
-        var success = false
-        self.isMinimuxerStarted = true
-        defer {
-            if !success {
-                self.isMinimuxerStarted = false
-            }
-            debugLog("[AppBootManager] startMinimuxer() exited (success: \(success))")
-        }
+        defer { debugLog("[AppBootManager] startMinimuxer() exited") }
         
-        try await minimuxerStart(pairingFile, mountPath: FileManager.default.documentsDirectory.absoluteString)
+        if UserDefaults.standard.enableEMPforWireguard {
+            debugLog("[AppBootManager] Starting EMProxy before minimuxer...")
+            try await startEMProxy()
+        }
+
+        let preferred = PairingFileManager.shared.preferredProtocol
+        try await minimuxerStart(pairingFile, preferred: preferred)
         
         // Validate the pairing by trying to fetch the UDID
         do {
             debugLog("[AppBootManager] startMinimuxer(): Minimuxer fetchUDID() based connection starting...")
-            let deviceUDID = try await fetchUDID()
-            debugLog("[AppBootManager] startMinimuxer(): Minimuxer fetchUDID() based connection test SUCCEEDED. UDID: \(deviceUDID ?? "nil")")
+            let deviceUDID = try await fetchUDID(forceLive: true)
+            debugLog("[AppBootManager] startMinimuxer(): Minimuxer fetchUDID() based connection test SUCCEEDED. UDID: \(deviceUDID)")
             self.needsPairingPrompt = false
-            success = true
         } catch {
-            if error.isMinimuxerPairingFile {
+            if case MinimuxerError.invalidPairing = error {
                 debugLog("[AppBootManager] startMinimuxer(): Minimuxer fetchUDID() based connection test FAILED. \(error)")
                 self.needsPairingPrompt = true
                 throw error
             } else {
                 debugLog("[AppBootManager] startMinimuxer(): Minimuxer fetchUDID() based connection test FAILED but PAIRING FILE IS VALID. \(error)")
-                success = true
+            }
+        }
+    }
+    
+    @MainActor
+    public func promptForPairing(on vc: UIViewController) async {
+        var isRetry = false
+        while true {
+            guard let selectedURL = await withCheckedContinuation({ (continuation: CheckedContinuation<URL?, Never>) in
+                PairingViewController.shared.presentPairingFileAlert(on: vc, isRetry: isRetry) { selectedURL in
+                    debugLog("[AppBootManager] promptForPairing: alert completed with selectedURL: \(selectedURL?.path ?? "nil")")
+                    continuation.resume(returning: selectedURL)
+                }
+            }) else {
+                debugLog("[AppBootManager] promptForPairing: user skipped or cancelled pairing prompt")
+                break
+            }
+            
+            debugLog("[AppBootManager] promptForPairing: fetching pairing file at selectedURL: \(selectedURL.path)")
+            guard let pairingString = PairingFileManager.shared.fetchPairingFile() else {
+                debugLog("[AppBootManager] promptForPairing: failed to read saved pairing file from disk")
+                isRetry = true
+                continue
+            }
+            
+            do {
+                try await self.startMinimuxer(pairingFile: pairingString)
+                self.needsPairingPrompt = false
+                break
+            } catch {
+                debugLog("[AppBootManager] startMinimuxer failed with pairing file: \(error)")
+                let didSwitch = await PairingViewController.shared.handlePotentialProtocolMismatch(
+                    on: vc,
+                    pairingContent: pairingString
+                )
+                if didSwitch {
+                    do {
+                        try await self.startMinimuxer(pairingFile: pairingString)
+                        self.needsPairingPrompt = false
+                        break
+                    } catch {
+                        debugLog("[AppBootManager] startMinimuxer retry after protocol switch failed: \(error)")
+                    }
+                }
+                isRetry = true
             }
         }
     }
     
     public nonisolated func performBootSequence() async {
         debugLog("[AppBootManager] performBootSequence() entered")
-        defer {
-            debugLog("[AppBootManager] performBootSequence() exited")
-        }
-        // 1. Structured concurrent child task A
+        defer { debugLog("[AppBootManager] performBootSequence() exited") }
+        
         async let jitCheck: Void = {
             debugLog("[AppBootManager] performBootSequence(): JIT check starting")
-            defer {
-                debugLog("[AppBootManager] performBootSequence(): JIT check completed")
-            }
-            if #available(iOS 17, *), !UserDefaults.standard.sidejitenable {
+            defer { debugLog("[AppBootManager] performBootSequence(): JIT check completed") }
+            if #available(iOS 17, *), !UserDefaults.standard.isSideJITServerEnabled {
                 do {
-                    try await self.isSideJITServerDetected()
+                    try await SideJITManager.shared.isSideJITServerDetected()
                     self.needsSideJITPrompt = true
                 } catch {
                     debugLog("[AppBootManager] Cannot find sideJITServer")
                 }
             }
             
-            if #available(iOS 17, *), UserDefaults.standard.sidejitenable {
-                await self.askForNetwork()
+            if #available(iOS 17, *), UserDefaults.standard.isSideJITServerEnabled {
+                await SideJITManager.shared.askForNetwork()
                 debugLog("[AppBootManager] SideJITServer Enabled")
             }
         }()
         
-        // 2. Structured concurrent child task B
         async let minimuxerCheck: Void = {
             debugLog("[AppBootManager] performBootSequence(): Minimuxer check starting")
-            defer {
-                debugLog("[AppBootManager] performBootSequence(): Minimuxer check completed")
+            defer { debugLog("[AppBootManager] performBootSequence(): Minimuxer check completed") }
+            guard let pf = PairingFileManager.shared.fetchPairingFile() else {
+                #if !targetEnvironment(simulator)
+                self.needsPairingPrompt = true
+                #endif
+                return
             }
-            #if targetEnvironment(simulator)
+
             do {
-                try await self.startMinimuxer(pairingFile: "ignored-for-sim")
+                try await self.startMinimuxer(pairingFile: pf)
             } catch {
                 debugLog("[AppBootManager] Failed to start minimuxer: \(error)")
             }
-            #else
-            if let pf = self.getSavedPairingFile() {
-                do {
-                    try await self.startMinimuxer(pairingFile: pf)
-                } catch {
-                    debugLog("[AppBootManager] Failed to start minimuxer: \(error)")
-                }
-            } else {
-                self.needsPairingPrompt = true
-            }
-            #endif
         }()
         
-        // Await both concurrently (Structured Concurrency awaits them in parallel)
         _ = await (jitCheck, minimuxerCheck)
-    }
-    
-    private nonisolated func askForNetwork() async {
-        let address = UserDefaults.standard.textInputSideJITServerurl ?? ""
-        let SJSURL = address.isEmpty ? "http://sidejitserver._http._tcp.local:8080" : address
-        guard let url = URL(string: "\(SJSURL)/re/") else { return }
-        do {
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 2.0
-            
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    let (data, response) = try await URLSession.shared.data(for: request)
-                    debugLog("data: \(data), response: \(response)")
-                }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: 2_000_000_000) // 2.0 seconds
-                    throw URLError(.timedOut)
-                }
-                try await group.next()
-                group.cancelAll()
-            }
-        } catch {
-            debugLog("error: \(error)")
-        }
-    }
-
-    private nonisolated func isSideJITServerDetected() async throws {
-        let address = UserDefaults.standard.textInputSideJITServerurl ?? ""
-        let SJSURL = address.isEmpty ? "http://sidejitserver._http._tcp.local:8080" : address
-        guard let url = URL(string: SJSURL) else { throw URLError(.badURL) }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 2.0
-        
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask {
-                _ = try await URLSession.shared.data(for: request)
-            }
-            group.addTask {
-                try await Task.sleep(nanoseconds: 2_000_000_000) // 2.0 seconds
-                throw URLError(.timedOut)
-            }
-            try await group.next()
-            group.cancelAll()
-        }
     }
 }

@@ -7,7 +7,6 @@
 //
 
 import SwiftUI
-@preconcurrency import AltStoreCore
 
 private extension Color {
     static let settingsRowBackground = Color.white.opacity(0.15)
@@ -21,10 +20,8 @@ private let pipelineStepToggles: [(name: String, step: PipelineStep)] = [
     ("Clean Staged App",                        .cleanStagedApp),
     ("Deactivate App",                          .deactivateApp),
     ("Download App",                            .downloadApp),
-    ("Enable JIT",                              .enableJIT),
-    ("Export Resigned App",                     .exportResignedApp),
-    ("Fetch Provisioning Profiles (Install)",   .fetchProvisioningProfilesInstall),
-    ("Fetch Provisioning Profiles (Refresh)",   .fetchProvisioningProfilesRefresh),
+    ("Export Resigned IPA",                     .exportResignedIPA),
+    ("Fetch Provisioning Profiles",             .fetchProvisioningProfiles),
     ("Install App",                             .installApp),
     ("Preflight Checks",                        .preflightChecks),
     ("Prepare App Extension Bundle IDs",        .prepareAppExtensionBundleIDs),
@@ -41,14 +38,15 @@ private let pipelineStepToggles: [(name: String, step: PipelineStep)] = [
     ("User Customization",                      .userCustomization),
     ("Verify App",                              .verifyApp),
     ("Verify Certificate",                      .verifyCertificate),
+    ("Create IPA",                              .createIPA),
 ]
 
 private let standaloneStepToggles: [(name: String, step: StandaloneStep)] = [
-    ("Authentication",                          .authentication),
+    ("Sign In",                                 .signIn),
     ("Background Refresh Apps",                 .backgroundRefreshApps),
     ("Clear App Cache",                         .clearAppCache),
-    ("Fetch Anisette Data",                     .fetchAnisetteData),
-    ("Fetch App IDs",                           .fetchAppIDs),
+    ("Enable JIT",                              .enableJIT),
+    ("Sync App IDs",                            .syncAppIDs),
     ("Fetch Source",                            .fetchSource),
     ("Schedule Expiration Warning",             .scheduleExpirationWarningNotification),
 ]
@@ -103,7 +101,9 @@ struct OperationsLoggingControlView: View {
         }
         .background(Color(uiColor: .settingsBackground).ignoresSafeArea())
         .navigationTitle("Operations Logging")
+        #if !os(tvOS)
         .navigationBarTitleDisplayMode(.large)
+        #endif
     }
 
     private func stepToggle(_ title: String, step: some OperationStep) -> some View {

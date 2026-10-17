@@ -8,7 +8,6 @@
 
 import UserNotifications
 import Foundation
-@preconcurrency import AltStoreCore
 
 final class ScheduleExpirationWarningNotificationOperation: BaseStandaloneOperation<StandaloneOperationContext, Bool>, @unchecked Sendable {
     let installedApp: InstalledApp
@@ -19,8 +18,12 @@ final class ScheduleExpirationWarningNotificationOperation: BaseStandaloneOperat
     }
 
     override func execute(parentProgress: Progress?) async throws -> Bool {
+        let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[ScheduleExpirationWarningNotificationOperation] execute() started")
-        defer { debugLog("[ScheduleExpirationWarningNotificationOperation] execute() completed") }
+        defer {
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            debugLog("[ScheduleExpirationWarningNotificationOperation] execute() took: \(String(format: "%.3fs", elapsed))")
+        }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         self.setProgress(10)
 
@@ -44,6 +47,7 @@ final class ScheduleExpirationWarningNotificationOperation: BaseStandaloneOperat
 
         let startProgress = self.progress.completedUnitCount
         let endProgress: Int64 = 95
+        #if !os(tvOS)
         let range = endProgress - startProgress
         let count = milestones.count
         
@@ -68,8 +72,15 @@ final class ScheduleExpirationWarningNotificationOperation: BaseStandaloneOperat
             let trigger = UNTimeIntervalNotificationTrigger(timeInterval: triggerInterval, repeats: false)
             let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
 
-            try await center.add(request)
+            do {
+                try await center.add(request)
+            } catch {
+                debugLog("[ScheduleExpirationWarningNotificationOperation] Failed to schedule notification '\(identifier)': \(error)")
+            }
         }
+        #else
+        NotificationCenter.default.post(name: NSNotification.Name("TVTopShelfItemsDidChangeNotification"), object: nil)
+        #endif
         self.setProgress(100)
         return true
     }

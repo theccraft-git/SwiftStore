@@ -9,14 +9,17 @@
 @preconcurrency import UIKit
 import Foundation
 import Network
-@preconcurrency import AltStoreCore
-@preconcurrency import AltSign
+import SideSign
 
 final class SendAppOperation: BasePipelineOperation<InstallAppOperationContext, ALTApplication>, @unchecked Sendable {
     
     override func execute(parentProgress: Progress?) async throws -> ALTApplication {
+        let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[SendAppOperation] execute() started")
-        defer { debugLog("[SendAppOperation] execute() completed") }
+        defer {
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            debugLog("[SendAppOperation] execute() took: \(String(format: "%.3fs", elapsed))")
+        }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         self.setProgress(10)
 
@@ -24,39 +27,28 @@ final class SendAppOperation: BasePipelineOperation<InstallAppOperationContext, 
             throw OperationError.invalidParameters("SendAppOperation.main: self.resignedAppBundle is nil")
         }
 
-        let app = AnyApp(name: resignedAppBundle.name, bundleIdentifier: self.context.targetBundleIdentifier, url: resignedAppBundle.fileURL, storeApp: nil)
-        let fileURL = InstalledApp.refreshedIPAURL(for: app)
-        verboseLog("[SendAppOperation] AFC App `fileURL`: \(fileURL.absoluteString)")
+        let bundleIdentifier = self.context.targetBundleIdentifier
+        let appURL = resignedAppBundle.fileURL
+        verboseLog("[SendAppOperation] AFC App Bundle `fileURL`: \(appURL.absoluteString)")
 
-        // Cellular shortcut should only be executed below iOS 16.4 AND when explicitly enabled in settings
-        if #available(iOS 16.4, *) {
-            context.shouldTurnOffData = false
-        } else {
-            context.shouldTurnOffData = UserDefaults.standard.isCellularRefreshEnabled
-        }
-        
-        if self.context.shouldTurnOffData {
-            // Wait for Shortcut to Finish Before Proceeding
-            await withCheckedContinuation { continuation in
-                let shortcutURLoff = URL(string: "shortcuts://run-shortcut?name=TurnOffData")!
-                UIApplication.shared.open(shortcutURLoff, options: [:]) { _ in
-                    self.debugLog("[SendAppOperation] Shortcut finished execution. Proceeding with file transfer.")
-                    continuation.resume()
-                }
+        do {
+            await CellularRefreshManager.shared.turnOffDataIfNeeded()
+            
+            if UserDefaults.standard.preferResignedIPA, let ipaURL = self.context.ipaURL {
+                debugLog("[SendAppOperation] Sending IPA at \(ipaURL.path) via AFC...")
+                let rawBytes = try Data(contentsOf: ipaURL, options: .mappedIfSafe)
+                try await sendIpaAfc(bundleIdentifier, rawBytes)
+            } else {
+                debugLog("[SendAppOperation] Sending App Bundle at \(appURL.path) via AFC...")
+                try await sendAppBundleAfc(bundleIdentifier, at: appURL)
             }
-        }
-        
-        try await self.processFile(at: fileURL, for: app.bundleIdentifier)
-        return resignedAppBundle
-    }
+            self.setProgress(100)
+        } catch {
+            await CellularRefreshManager.shared.turnOnDataIfNeeded()
 
-    private func processFile(at fileURL: URL, for bundleIdentifier: String) async throws {
-        guard let data = NSData(contentsOf: fileURL) else {
-            debugLog("[SendAppOperation] IPA doesn't exist????")
-            throw OperationError(.appNotFound(name: bundleIdentifier))
+            debugLog("[SendAppOperation] Failed to send app at \(self.context.ipaURL?.path ?? appURL.path): \(error)")
+            throw error
         }
-        let bytes = Data(data)
-        try await yeetAppAFC(bundleIdentifier, bytes)
-        self.setProgress(100)
+        return resignedAppBundle
     }
 }

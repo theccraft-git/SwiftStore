@@ -7,13 +7,12 @@
 //
 
 import UIKit
-@preconcurrency import AltStoreCore
 
 @MainActor
 public enum ExportCertificateDialog {
     
     public static func present(callbackTemplate: String, presentingViewController: UIViewController? = nil) {
-        let rootVC = presentingViewController ?? topViewController()
+        let rootVC = presentingViewController ?? UIApplication.shared.topViewController()
         guard let presentingVC = rootVC else { return }
         
         let alert = UIAlertController(
@@ -53,23 +52,5 @@ public enum ExportCertificateDialog {
         alert.addAction(UIAlertAction(title: NSLocalizedString("Cancel", comment: ""), style: .cancel))
         
         presentingVC.present(alert, animated: true)
-    }
-    
-    private static func topViewController(base: UIViewController? = UIApplication.shared.connectedScenes
-        .compactMap { ($0 as? UIWindowScene)?.keyWindow }
-        .first?.rootViewController) -> UIViewController? {
-            
-        if let nav = base as? UINavigationController {
-            return topViewController(base: nav.visibleViewController)
-        }
-        if let tab = base as? UITabBarController {
-            if let selected = tab.selectedViewController {
-                return topViewController(base: selected)
-            }
-        }
-        if let presented = base?.presentedViewController {
-            return topViewController(base: presented)
-        }
-        return base
     }
 }

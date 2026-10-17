@@ -7,12 +7,11 @@
 //
 
 @preconcurrency import UIKit
-@preconcurrency import AltStoreCore
 
 extension PillButton
 {
-    static let minimumSize = CGSize(width: 77, height: 31)
-    static let contentInsets = NSDirectionalEdgeInsets(top: 7, leading: 13, bottom: 7, trailing: 13)
+    static let minimumSize = CGSize(width: 77, height: 35)
+    static let contentInsets = NSDirectionalEdgeInsets(top: 10.5, leading: 14, bottom: 10.5, trailing: 14)
 }
 
 extension PillButton
@@ -88,6 +87,12 @@ class PillButton: UIButton
         }
     }
     
+    override var isIndicatingActivity: Bool {
+        didSet {
+            self.update()
+        }
+    }
+
     var style: Style = .pill {
         didSet {
             guard self.style != oldValue else { return }
@@ -95,11 +100,52 @@ class PillButton: UIButton
             if self.style == .custom
             {
                 // Reset insets for custom style.
-                self.contentEdgeInsets = UIEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+                let size = self.fontSize ?? self.storyboardFontSize ?? 14
+                let font = UIFont.boldSystemFont(ofSize: size)
+                var config = self.configuration ?? UIButton.Configuration.plain()
+                config.titleLineBreakMode = .byClipping
+                config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
+                config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { [weak self] incoming in
+                    var outgoing = incoming
+                    outgoing.font = font
+                    if let self = self {
+                        outgoing.foregroundColor = (self.progress == nil && !self.isIndicatingActivity) ? UIColor.white : UIColor.clear
+                    }
+                    return outgoing
+                }
+                self.configuration = config
             }
             
             self.update()
         }
+    }
+
+    override var intrinsicContentSize: CGSize {
+        var size = super.intrinsicContentSize
+        switch self.style {
+        case .pill:
+            size.width = max(size.width, PillButton.minimumSize.width)
+            size.height = max(size.height, PillButton.minimumSize.height)
+        case .custom:
+            break
+        }
+        return size
+    }
+
+    override func sizeThatFits(_ size: CGSize) -> CGSize
+    {
+        var size = super.sizeThatFits(size)
+        
+        switch self.style 
+        {
+        case .pill:
+            size.width = max(size.width, PillButton.minimumSize.width)
+            size.height = max(size.height, PillButton.minimumSize.height)
+            
+        case .custom: break
+        }
+        
+        return size
     }
     
     var fontSize: CGFloat? {
@@ -126,11 +172,6 @@ class PillButton: UIButton
         dateComponentsFormatter.collapsesLargestUnit = false
         return dateComponentsFormatter
     }()
-    
-    override var intrinsicContentSize: CGSize {
-        let size = self.sizeThatFits(CGSize(width: Double.infinity, height: .infinity))
-        return size
-    }
     
     deinit
     {
@@ -193,23 +234,6 @@ class PillButton: UIButton
         
         self.update()
     }
-    
-    override func sizeThatFits(_ size: CGSize) -> CGSize
-    {
-        var size = super.sizeThatFits(size)
-        
-        switch self.style 
-        {
-        case .pill:
-            // Enforce minimum size for pill style.
-            size.width = max(size.width, PillButton.minimumSize.width)
-            size.height = max(size.height, PillButton.minimumSize.height)
-            
-        case .custom: break
-        }
-        
-        return size
-    }
 }
 
 extension PillButton {
@@ -217,6 +241,8 @@ extension PillButton {
         let currentDate = Date()
         let expirationDate = installedApp.expirationDate
         let isExpired = currentDate > expirationDate
+        
+        // verboseLog("[PillButton] configure for app '\(installedApp.name)': status=\(installedApp.certificateStatus), certSerial=\(installedApp.certificateSerialNumber ?? "nil"), isExpired=\(isExpired)")
         
         if installedApp.certificateStatus == .revoked {
             self.setDisplayState(.revoked)
@@ -239,14 +265,17 @@ extension PillButton {
     }
 
     func resetDisplayState() {
+        // verboseLog("[PillButton] resetDisplayState called")
         self.countdownDate = nil
         self.borderColor = nil
         self.borderWidth = 0
         self.progress = nil
+        self.setTitle(nil, for: .normal)
         self.update()
     }
 
     func setDisplayState(_ state: DisplayState) {
+        // verboseLog("[PillButton] setDisplayState called: \(state)")
         switch state {
         case .revoked:
             self.countdownDate = nil
@@ -276,7 +305,7 @@ extension PillButton {
             
         case .crossSigned(let title, let daysRemaining):
             self.setTitle(title.uppercased(), for: .normal)
-            self.borderColor = .refreshRed
+            self.borderColor = .systemBlue
             self.borderWidth = 2.0
             
             switch daysRemaining {
@@ -286,6 +315,7 @@ extension PillButton {
             default: self.tintColor = .refreshRed
             }
         }
+        self.update()
     }
 }
 
@@ -293,7 +323,7 @@ private extension PillButton
 {
     func update()
     {
-        if self.progress == nil
+        if self.progress == nil && !self.isIndicatingActivity
         {
             self.setTitleColor(.white, for: .normal)
             self.backgroundColor = self.tintColor
@@ -303,7 +333,8 @@ private extension PillButton
         }
         else
         {
-            self.setTitleColor(self.tintColor, for: .normal)
+            self.setTitleColor(.clear, for: .normal)
+            self.setTitleColor(.clear, for: .disabled)
             self.backgroundColor = self.tintColor.withAlphaComponent(0.15)
             self.progressView.progressTintColor = self.progressTintColor ?? self.tintColor
             self.layer.borderColor = nil
@@ -312,14 +343,34 @@ private extension PillButton
         
         // Update font after init because the original titleLabel is replaced.
         let size = self.fontSize ?? self.storyboardFontSize ?? 14
-        self.titleLabel?.font = UIFont.boldSystemFont(ofSize: size)
+        let font = UIFont.boldSystemFont(ofSize: size)
+        self.titleLabel?.font = font
         self.titleLabel?.adjustsFontSizeToFitWidth = false
+        self.titleLabel?.numberOfLines = 1
+        self.titleLabel?.lineBreakMode = .byClipping
         
         switch self.style
         {
         case .custom: break // Don't update insets in case client has updated them.
         case .pill:
-            self.contentEdgeInsets = UIEdgeInsets(top: Self.contentInsets.top, left: Self.contentInsets.leading, bottom: Self.contentInsets.bottom, right: Self.contentInsets.trailing)
+            var config = self.configuration ?? UIButton.Configuration.plain()
+            config.cornerStyle = .capsule
+            config.titleLineBreakMode = .byClipping
+            config.contentInsets = NSDirectionalEdgeInsets(
+                top: Self.contentInsets.top,
+                leading: Self.contentInsets.leading,
+                bottom: Self.contentInsets.bottom,
+                trailing: Self.contentInsets.trailing
+            )
+            config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { [weak self] incoming in
+                var outgoing = incoming
+                outgoing.font = font
+                if let self = self {
+                    outgoing.foregroundColor = (self.progress == nil && !self.isIndicatingActivity) ? UIColor.white : UIColor.clear
+                }
+                return outgoing
+            }
+            self.configuration = config
             self.layer.cornerRadius = self.bounds.height / 2
         }
     }

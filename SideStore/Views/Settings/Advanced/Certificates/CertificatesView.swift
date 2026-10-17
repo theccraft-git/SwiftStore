@@ -7,7 +7,7 @@
 //
 
 import SwiftUI
-@preconcurrency import AltSign
+import SideSign
 import UniformTypeIdentifiers
 
 struct CertificatesView: View {
@@ -22,7 +22,7 @@ struct CertificatesView: View {
         ["key", "pem", "der"].compactMap { UTType(filenameExtension: $0) }
     }
     
-    @State private var showCreateDialog           = false
+    @State private var showCreateSheet            = false
     @State private var showFileImporter           = false
     @State private var showRevokeConfirmation     = false
     @State private var showDeactivateConfirmation = false
@@ -32,7 +32,6 @@ struct CertificatesView: View {
     @State private var hasInitialLoaded           = false
     @State private var hasCopiedActiveSerial      = false
     
-    @State private var newMachineName        = ""
     @State private var exportPasswordInput   = ""
     @State private var fileImportMode: FileImportMode       = .certificate
     @State private var keyTextImportItem: KeyTextImportItem? = nil
@@ -40,11 +39,11 @@ struct CertificatesView: View {
     
     @State private var deleteLocalOnRevoke: Bool = true
     
-    @State private var certificateToRevoke:      ALTCertificate? = nil
-    @State private var certificateToDelete:      ALTCertificate? = nil
-    @State private var certificateToExport:      ALTCertificate? = nil
-    @State private var certificateToAddKeyFor:   ALTCertificate? = nil
-    @State private var certificateToClearKeyFor: ALTCertificate? = nil
+    @State private var certificateToRevoke:      ALTX509Certificate? = nil
+    @State private var certificateToDelete:      ALTX509Certificate? = nil
+    @State private var certificateToExport:      ALTX509Certificate? = nil
+    @State private var certificateToAddKeyFor:   ALTX509Certificate? = nil
+    @State private var certificateToClearKeyFor: ALTX509Certificate? = nil
     
     var body: some View {
         ZStack {
@@ -68,9 +67,7 @@ struct CertificatesView: View {
                         showClearKeyConfirmation = true
                     },
                     onAddKeyBin:  { cert in
-                        certificateToAddKeyFor = cert
-                        fileImportMode = .privateKey
-                        showFileImporter = true
+                        importPrivateKeyAction(for: cert)
                     },
                     onAddKeyText: { cert in
                         keyTextImportItem = KeyTextImportItem(id: cert.serialNumber, cert: cert)
@@ -96,8 +93,7 @@ struct CertificatesView: View {
                     .accessibilityLabel("Toggle Hide Sensitive Information")
                     
                     SwiftUI.Button {
-                        newMachineName = "SideStore - \(UIDevice.current.name)"
-                        showCreateDialog = true
+                        showCreateSheet = true
                     } label: {
                         Image(systemName: "plus")
                     }
@@ -105,8 +101,7 @@ struct CertificatesView: View {
                     .disabled(viewModel.team == nil)
                     
                     SwiftUI.Button {
-                        fileImportMode = .certificate
-                        showFileImporter = true
+                        importCertificatesAction()
                     } label: {
                         Image(systemName: "square.and.arrow.down")
                     }
@@ -126,14 +121,12 @@ struct CertificatesView: View {
         } message: {
             Text(viewModel.errorMessage ?? "An unknown error occurred.")
         }
-        .alert("New Certificate", isPresented: $showCreateDialog) {
-            TextField("Machine Name", text: $newMachineName)
-            SwiftUI.Button("Create") {
-                viewModel.createCertificate(machineName: newMachineName, presentingViewController: presentingViewController)
-            }
-            SwiftUI.Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Enter a name for the new certificate. This will create a new certificate on Apple's servers and store the private key locally.")
+        .sheet(isPresented: $showCreateSheet) {
+            CreateCertificateSheetView(
+                viewModel: viewModel,
+                presentingViewController: presentingViewController,
+                isPresented: $showCreateSheet
+            )
         }
         .alert("Deactivate Certificate", isPresented: $showDeactivateConfirmation) {
             SwiftUI.Button("Deactivate", role: .destructive) { viewModel.deactivateActiveCertificate() }
@@ -178,22 +171,19 @@ struct CertificatesView: View {
         .sheet(isPresented: $viewModel.showFailuresAlert) {
             NavigationView {
                 List {
-                    ForEach(Array(viewModel.failedImportsList.enumerated()), id: \.offset) { index, failure in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text("\(index + 1).")
-                                .font(.system(size: 13, weight: .medium, design: .monospaced))
-                                .foregroundColor(.secondary)
-                            Text(failure)
-                                .font(.system(size: 13))
-                        }
-                        .padding(.vertical, 4)
+                    ForEach(viewModel.failedImportsList, id: \.self) { failure in
+                        Text(failure)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(.red)
                     }
                 }
                 .navigationTitle("Import Failures")
+                #if !os(tvOS)
                 .navigationBarTitleDisplayMode(.inline)
+                #endif
                 .toolbar {
                     ToolbarItem(placement: .navigationBarTrailing) {
-                        SwiftUI.Button("OK") {
+                        SwiftUI.Button("Done") {
                             viewModel.showFailuresAlert = false
                         }
                     }
@@ -203,8 +193,8 @@ struct CertificatesView: View {
         .alert("Export Certificate Password", isPresented: $showExportPasswordPrompt) {
             SecureField("Password", text: $exportPasswordInput)
             SwiftUI.Button("Export") {
-                if let cert = certificateToExport {
-                    CertificateExporter.shareP12(cert, password: exportPasswordInput) { viewModel.errorMessage = $0 }
+                if let cert = certificateToExport, let signable = viewModel.getSignableCertificate(for: cert.serialNumber) {
+                    CertificateExporter.shareP12(signable, password: exportPasswordInput, onShare: { viewModel.shareURL = $0 }) { viewModel.errorMessage = $0 }
                 }
             }
             SwiftUI.Button("Cancel", role: .cancel) {}
@@ -224,6 +214,7 @@ struct CertificatesView: View {
                 Text("This will clear the locally stored private key of this certificate.\n\nName: \(cert.name)\nS/N: \(cert.serialNumber)")
             }
         }
+        #if !os(tvOS)
         .fileImporter(
             isPresented: $showFileImporter,
             allowedContentTypes: fileImportMode == .certificate ? allowedImportTypes : allowedKeyImportTypes,
@@ -250,6 +241,7 @@ struct CertificatesView: View {
                 viewModel.errorMessage = "Failed to select \(type): " + error.localizedDescription
             }
         }
+        #endif
         .sheet(item: $keyTextImportItem) { item in
             PrivateKeyTextInputView(
                 text: $privateKeyTextInput,
@@ -262,24 +254,49 @@ struct CertificatesView: View {
                 }
             )
         }
+        .sheet(isPresented: Binding<Bool>(
+            get: { viewModel.shareURL != nil },
+            set: { if !$0 { viewModel.shareURL = nil } }
+        )) {
+            if let url = viewModel.shareURL {
+                ActivityViewController(activityItems: [url])
+            }
+        }
     }
     
-    private func pushDetailView(for cert: ALTCertificate) {
+    private func pushDetailView(for cert: ALTX509Certificate) {
         let metadata = DeveloperPortalMetadata(
             identifier: cert.identifier,
             machineName: cert.machineName,
             machineIdentifier: cert.machineIdentifier,
-            requesterEmail: cert.requesterEmail
+            requesterEmail: cert.requesterEmail,
+            requesterFirstName: cert.requesterFirstName,
+            requesterLastName: cert.requesterLastName,
+            displayName: cert.displayName,
+            certificateType: cert.certificateType,
+            certificateTypeName: cert.certificateTypeName,
+            certificateTypeId: cert.certificateTypeId,
+            platform: cert.platform,
+            platformName: cert.platformName,
+            isManaged: cert.isManaged,
+            status: cert.status,
+            ownerName: cert.ownerName,
+            ownerId: cert.ownerId,
+            autoRotationEnabled: cert.autoRotationEnabled,
+            requestedDate: cert.requestedDate,
+            serialNumDecimal: cert.serialNumDecimal
         )
-        let detailVC = UIHostingController(rootView: CertificateDetailView(certificate: cert, portalMetadata: metadata))
+        let detailVC = UIHostingController(rootView: CertificateDetailView(certificate: cert, portalMetadata: metadata, viewModel: viewModel))
+        #if !os(tvOS)
         let appearance = UINavigationBarAppearance()
         appearance.configureWithDefaultBackground()
         detailVC.navigationItem.scrollEdgeAppearance = appearance
         detailVC.navigationItem.standardAppearance   = appearance
+        #endif
         presentingViewController?.navigationController?.pushViewController(detailVC, animated: true)
     }
     
-    private func presentRevokeAlert(for cert: ALTCertificate) {
+    private func presentRevokeAlert(for cert: ALTX509Certificate) {
         let contentVC = RevokeAlertViewController()
         
         let alertController = UIAlertController(
@@ -301,6 +318,47 @@ struct CertificatesView: View {
         
         presentingViewController?.present(alertController, animated: true)
     }
+    
+    private func importPrivateKeyAction(for cert: ALTX509Certificate) {
+        certificateToAddKeyFor = cert
+        fileImportMode = .privateKey
+        #if !os(tvOS)
+        showFileImporter = true
+        #else
+        guard let topVC = presentingViewController ?? UIApplication.shared.topViewController() else { return }
+        TVWebFileTransferManager.shared.startImport(
+            acceptedExtensions: ["der", "key", "pem", "p12"],
+            title: "Import Private Key (.der/.pem)",
+            presentingVC: topVC
+        ) { fileURL in
+            guard let fileURL = fileURL else { return }
+            do {
+                let data = try Data(contentsOf: fileURL)
+                viewModel.importPrivateKey(data: data, for: cert)
+            } catch {
+                viewModel.errorMessage = "Failed to read private key: " + error.localizedDescription
+            }
+            certificateToAddKeyFor = nil
+        }
+        #endif
+    }
+    
+    private func importCertificatesAction() {
+        fileImportMode = .certificate
+        #if !os(tvOS)
+        showFileImporter = true
+        #else
+        guard let topVC = presentingViewController ?? UIApplication.shared.topViewController() else { return }
+        TVWebFileTransferManager.shared.startImport(
+            acceptedExtensions: ["p12", "der", "pem", "cer", "crt"],
+            title: "Import Certificates",
+            presentingVC: topVC
+        ) { fileURL in
+            guard let fileURL = fileURL else { return }
+            viewModel.startBulkImport(urls: [fileURL])
+        }
+        #endif
+    }
 }
 
 private struct LoadingOverlay: View {
@@ -309,8 +367,71 @@ private struct LoadingOverlay: View {
             Color.black.opacity(0.2).ignoresSafeArea()
             ProgressView()
                 .padding(20)
+                #if !os(tvOS)
                 .background(Color(.secondarySystemBackground))
+                #else
+                .background(Color.white.opacity(0.1))
+                #endif
                 .cornerRadius(10)
+        }
+    }
+}
+
+private struct CreateCertificateSheetView: View {
+    @ObservedObject var viewModel: CertificatesViewModel
+    var presentingViewController: UIViewController?
+    @Binding var isPresented: Bool
+
+    @State private var machineName: String = "SideStore - \(UIDevice.current.name)"
+    @State private var selectedCertificateType: CertificateType = .development
+
+    private var isPaidWarningVisible: Bool {
+        selectedCertificateType.isPaidOnly && !viewModel.isPaidAccount
+    }
+
+    private var canCreate: Bool {
+        !machineName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(
+                    header: Text("Certificate Information"),
+                    footer: Text(isPaidWarningVisible
+                        ? "This certificate type requires a paid Apple Developer account."
+                        : "Select the certificate type and machine name. This registers the certificate on Apple's servers and saves the private key locally.")
+                ) {
+                    Picker("Certificate Type", selection: $selectedCertificateType) {
+                        ForEach(viewModel.availableCertificateTypes, id: \.rawValue) { certType in
+                            Text(certType.displayName).tag(certType)
+                        }
+                    }
+
+                    TextField("Machine Name", text: $machineName)
+                }
+            }
+            .navigationTitle("New Certificate")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    SwiftUI.Button("Cancel") {
+                        isPresented = false
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    SwiftUI.Button("Create") {
+                        let name = machineName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !name.isEmpty else { return }
+                        isPresented = false
+                        viewModel.createCertificate(
+                            machineName: name,
+                            type: selectedCertificateType,
+                            presentingViewController: presentingViewController
+                        )
+                    }
+                    .disabled(!canCreate)
+                }
+            }
         }
     }
 }

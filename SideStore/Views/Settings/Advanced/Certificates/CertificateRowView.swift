@@ -7,10 +7,10 @@
 //
 
 import SwiftUI
-@preconcurrency import AltSign
+import SideSign
 
 struct CertificateRowView: View {
-    let cert: ALTCertificate
+    let cert: ALTX509Certificate
     @ObservedObject var viewModel: CertificatesViewModel
     
     var onRevoke:     () -> Void
@@ -20,7 +20,7 @@ struct CertificateRowView: View {
     var onAddKeyText: () -> Void
     var onDelete:     () -> Void
     
-    private var hasPrivateKey: Bool { cert.privateKey != nil }
+    private var hasPrivateKey: Bool { viewModel.hasPrivateKey(for: cert) }
     private var isActive:      Bool { cert.serialNumber == viewModel.activeSerialNumber }
     private var isRemote:      Bool { viewModel.remoteSerials.contains(cert.serialNumber) }
     
@@ -30,14 +30,14 @@ struct CertificateRowView: View {
                 Text((cert.machineName ?? cert.name) + (isRemote ? " (R)" : ""))
                     .font(.headline)
                 
-                let displaySerial = viewModel.displaySerial(for: cert, hasPrivateKey: hasPrivateKey)
+                let displaySerial = viewModel.displaySerial(for: cert)
                 (
                     Text("Serial: ").font(.system(size: 11))
                     + Text(displaySerial).font(.system(size: 11, design: .monospaced))
                 )
                 .foregroundColor(.secondary)
                 
-                if let displayIdent = viewModel.displayIdentifier(for: cert, hasPrivateKey: hasPrivateKey) {
+                if let displayIdent = viewModel.displayIdentifier(for: cert) {
                     (
                         Text("ID: ").font(.system(size: 10))
                         + Text(displayIdent).font(.system(size: 10, design: .monospaced))
@@ -49,11 +49,20 @@ struct CertificateRowView: View {
                     CertBriefInfoView(brief: brief, cert: cert, viewModel: viewModel)
                 }
                 
-                if let displayReq = viewModel.displayRequester(for: cert, hasPrivateKey: hasPrivateKey) {
+                if let displayReq = viewModel.displayRequester(for: cert) {
                     let isHidden = displayReq.contains("•")
                     (
                         Text("Requester: ").font(.system(size: 10))
                         + Text(displayReq).font(isHidden ? .system(size: 10, design: .monospaced) : .system(size: 10))
+                    )
+                    .foregroundColor(.secondary)
+                }
+                
+                if let createdBy = viewModel.displayCreatedBy(for: cert) {
+                    let isHidden = createdBy.contains("•")
+                    (
+                        Text("Created By: ").font(.system(size: 10))
+                        + Text(createdBy).font(isHidden ? .system(size: 10, design: .monospaced) : .system(size: 10))
                     )
                     .foregroundColor(.secondary)
                 }
@@ -72,7 +81,7 @@ struct CertificateRowView: View {
         .padding(.vertical, 4)
         .contentShape(Rectangle())
         .contextMenu {
-            let isMasked = viewModel.isSerialMasked(for: cert, hasPrivateKey: hasPrivateKey)
+            let isMasked = viewModel.isSerialMasked(for: cert)
             SwiftUI.Button { toggleReveal() } label: {
                 Label(isMasked ? "Reveal Details" : "Hide Details",
                       systemImage: isMasked ? "eye" : "eye.slash")
@@ -82,13 +91,22 @@ struct CertificateRowView: View {
                     Label("Activate", systemImage: "key.fill")
                 }
             }
-            SwiftUI.Button { UIPasteboard.general.string = cert.serialNumber } label: {
+            SwiftUI.Button {
+                #if !os(tvOS)
+                UIPasteboard.general.string = cert.serialNumber
+                #endif
+            } label: {
                 Label("Copy S/N", systemImage: "doc.on.doc")
             }
             if hasPrivateKey {
                 CertPrivateKeyMenuItems(cert: cert, viewModel: viewModel, onExportP12: onExportP12, onClearKey: onClearKey)
             } else {
                 CertPublicKeyMenuItems(cert: cert, viewModel: viewModel, onAddKeyBin: onAddKeyBin, onAddKeyText: onAddKeyText, onExportP12: onExportP12)
+            }
+            if isRemote {
+                SwiftUI.Button(role: .destructive) { onRevoke() } label: {
+                    Label("Revoke", systemImage: "xmark.circle")
+                }
             }
             if viewModel.isCertificateLocallyCached(cert) {
                 SwiftUI.Button(role: .destructive) { onDelete() } label: {
@@ -106,7 +124,7 @@ struct CertificateRowView: View {
 
 private struct CertBriefInfoView: View {
     let brief: CertificateBriefInfo
-    let cert: ALTCertificate
+    let cert: ALTX509Certificate
     @ObservedObject var viewModel: CertificatesViewModel
     
     var body: some View {
@@ -120,6 +138,14 @@ private struct CertBriefInfoView: View {
                 + Text(displayType).font(isTypeHidden ? .system(size: 10, design: .monospaced) : .system(size: 10))
             )
             .foregroundColor(.secondary)
+            if let typeName = viewModel.displayCertificateTypeName(for: cert) {
+                let isTypeNameHidden = typeName.contains("•")
+                (
+                    Text("Type Name: ").font(.system(size: 10))
+                    + Text(typeName).font(isTypeNameHidden ? .system(size: 10, design: .monospaced) : .system(size: 10))
+                )
+                .foregroundColor(.secondary)
+            }
             (
                 Text("Validity: ").font(.system(size: 10))
                 + Text(displayValidity).font(isValidityHidden ? .system(size: 10, design: .monospaced) : .system(size: 10))
@@ -149,38 +175,54 @@ private struct CertTrailingIcons: View {
     }
 }
 
+private struct AdaptiveMenu<Content: View>: View {
+    let title: String
+    let systemImage: String
+    @ViewBuilder let content: () -> Content
+    
+    var body: some View {
+        #if !os(tvOS)
+        Menu {
+            content()
+        } label: {
+            Label(title, systemImage: systemImage)
+        }
+        #else
+        content()
+        #endif
+    }
+}
+
 private struct CertPrivateKeyMenuItems: View {
-    let cert: ALTCertificate
+    let cert: ALTX509Certificate
     @ObservedObject var viewModel: CertificatesViewModel
     var onExportP12: () -> Void
     var onClearKey:  () -> Void
     
     var body: some View {
         Group {
-            SwiftUI.Button { CertificateExporter.copyPrivateKey(cert) } label: { Label("Copy pKey (.pem)", systemImage: "doc.on.doc") }
-            Menu {
-                SwiftUI.Button { CertificateExporter.sharePrivateKeyAsPEM(cert) { viewModel.errorMessage = $0 } } label: { Label("Export (.pem)", systemImage: "doc.text") }
-                SwiftUI.Button { CertificateExporter.sharePrivateKeyAsDER(cert) { viewModel.errorMessage = $0 } } label: { Label("Export (.der)", systemImage: "doc.text") }
-            } label: {
-                Label("Export Private Key", systemImage: "key")
+            if let signable = viewModel.getSignableCertificate(for: cert.serialNumber) {
+                SwiftUI.Button { CertificateExporter.copyPrivateKey(signable) } label: { Label("Copy pKey (.pem)", systemImage: "doc.on.doc") }
+                AdaptiveMenu(title: "Export Private Key", systemImage: "key") {
+                    SwiftUI.Button { CertificateExporter.sharePrivateKeyAsPEM(signable, onShare: { viewModel.shareURL = $0 }) { viewModel.errorMessage = $0 } } label: { Label("Export (.pem)", systemImage: "doc.text") }
+                    SwiftUI.Button { CertificateExporter.sharePrivateKeyAsDER(signable, onShare: { viewModel.shareURL = $0 }) { viewModel.errorMessage = $0 } } label: { Label("Export (.der)", systemImage: "doc.text") }
+                }
             }
             
             Divider()
             
             SwiftUI.Button { CertificateExporter.copyPublicCertAsPEM(cert) { viewModel.errorMessage = $0 } } label: { Label("Copy pubK (.pem)", systemImage: "doc.on.doc") }
-            Menu {
-                SwiftUI.Button { CertificateExporter.sharePublicCertAsPEM(cert) { viewModel.errorMessage = $0 } } label: { Label("Export (.pem)", systemImage: "doc.text") }
-                SwiftUI.Button { CertificateExporter.sharePublicCertAsDER(cert) { viewModel.errorMessage = $0 } } label: { Label("Export (.der)", systemImage: "doc.text") }
-            } label: {
-                Label("Export Public Key", systemImage: "square.and.arrow.up")
+            AdaptiveMenu(title: "Export Public Key", systemImage: "square.and.arrow.up") {
+                SwiftUI.Button { CertificateExporter.sharePublicCertAsPEM(cert, onShare: { viewModel.shareURL = $0 }) { viewModel.errorMessage = $0 } } label: { Label("Export (.pem)", systemImage: "doc.text") }
+                SwiftUI.Button { CertificateExporter.sharePublicCertAsDER(cert, onShare: { viewModel.shareURL = $0 }) { viewModel.errorMessage = $0 } } label: { Label("Export (.der)", systemImage: "doc.text") }
             }
             
             Divider()
             
-            Menu {
-                SwiftUI.Button { onExportP12() } label: { Label("Export (.p12)", systemImage: "doc.zipper") }
-            } label: {
-                Label("Export Certificate", systemImage: "square.and.arrow.up")
+            AdaptiveMenu(title: "Export Certificate", systemImage: "square.and.arrow.up") {
+                SwiftUI.Button { onExportP12() } label: { Label("Export Full (.p12)", systemImage: "doc.zipper") }
+                SwiftUI.Button { CertificateExporter.sharePublicCertAsDER(cert, onShare: { viewModel.shareURL = $0 }) { viewModel.errorMessage = $0 } } label: { Label("Export Public (.der)", systemImage: "doc.text") }
+                SwiftUI.Button { CertificateExporter.sharePublicCertAsPEM(cert, onShare: { viewModel.shareURL = $0 }) { viewModel.errorMessage = $0 } } label: { Label("Export Public (.pem)", systemImage: "doc.text") }
             }
             
             SwiftUI.Button(role: .destructive) { onClearKey() } label: { Label("Clear pKey", systemImage: "key.slash") }
@@ -189,7 +231,7 @@ private struct CertPrivateKeyMenuItems: View {
 }
 
 private struct CertPublicKeyMenuItems: View {
-    let cert: ALTCertificate
+    let cert: ALTX509Certificate
     @ObservedObject var viewModel: CertificatesViewModel
     var onAddKeyBin:  () -> Void
     var onAddKeyText: () -> Void
@@ -203,19 +245,17 @@ private struct CertPublicKeyMenuItems: View {
             Divider()
             
             SwiftUI.Button { CertificateExporter.copyPublicCertAsPEM(cert) { viewModel.errorMessage = $0 } } label: { Label("Copy pubK (.pem)", systemImage: "doc.on.doc") }
-            Menu {
-                SwiftUI.Button { CertificateExporter.sharePublicCertAsPEM(cert) { viewModel.errorMessage = $0 } } label: { Label("Export (.pem)", systemImage: "doc.text") }
-                SwiftUI.Button { CertificateExporter.sharePublicCertAsDER(cert) { viewModel.errorMessage = $0 } } label: { Label("Export (.der)", systemImage: "doc.text") }
-            } label: {
-                Label("Export Public Key", systemImage: "square.and.arrow.up")
+            AdaptiveMenu(title: "Export Public Key", systemImage: "square.and.arrow.up") {
+                SwiftUI.Button { CertificateExporter.sharePublicCertAsPEM(cert, onShare: { viewModel.shareURL = $0 }) { viewModel.errorMessage = $0 } } label: { Label("Export (.pem)", systemImage: "doc.text") }
+                SwiftUI.Button { CertificateExporter.sharePublicCertAsDER(cert, onShare: { viewModel.shareURL = $0 }) { viewModel.errorMessage = $0 } } label: { Label("Export (.der)", systemImage: "doc.text") }
             }
             
             Divider()
             
-            Menu {
-                SwiftUI.Button { onExportP12() } label: { Label("Export (.p12)", systemImage: "doc.zipper") }
-            } label: {
-                Label("Export Certificate", systemImage: "square.and.arrow.up")
+            AdaptiveMenu(title: "Export Certificate", systemImage: "square.and.arrow.up") {
+                SwiftUI.Button { onExportP12() } label: { Label("Export Full (.p12)", systemImage: "doc.zipper") }
+                SwiftUI.Button { CertificateExporter.sharePublicCertAsDER(cert, onShare: { viewModel.shareURL = $0 }) { viewModel.errorMessage = $0 } } label: { Label("Export Public (.der)", systemImage: "doc.text") }
+                SwiftUI.Button { CertificateExporter.sharePublicCertAsPEM(cert, onShare: { viewModel.shareURL = $0 }) { viewModel.errorMessage = $0 } } label: { Label("Export Public (.pem)", systemImage: "doc.text") }
             }
         }
     }

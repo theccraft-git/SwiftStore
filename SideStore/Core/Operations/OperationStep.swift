@@ -16,10 +16,8 @@ enum PipelineStep: OperationStep {
     case cleanStagedApp
     case deactivateApp
     case downloadApp
-    case enableJIT
-    case exportResignedApp
-    case fetchProvisioningProfilesInstall
-    case fetchProvisioningProfilesRefresh
+    case exportResignedIPA
+    case fetchProvisioningProfiles
     case installApp
     case markAppInactive
     case stageBackupApp
@@ -39,18 +37,23 @@ enum PipelineStep: OperationStep {
     case verifyApp
     case verifyCertificate
     case updateAppCertificate
+    case embedSigningCert
     case cacheSigningCert
+    case cacheResignedMetadata
+    case patchInfoPlist
+    case createIPA
 
     fileprivate static let stepMap: [ObjectIdentifier: PipelineStep] = [
         ObjectIdentifier(PerformBackupRestoreOperation.self):             .backupAppData,
         ObjectIdentifier(CacheAppOperation.self):                         .cacheApp,
+        ObjectIdentifier(CacheSigningCertOperation.self):                 .cacheSigningCert,
+        ObjectIdentifier(CacheResignedMetadataOperation.self):            .cacheResignedMetadata,
+        ObjectIdentifier(PatchInfoPlistOperation.self):                   .patchInfoPlist,
         ObjectIdentifier(CleanStagedAppOperation.self):                   .cleanStagedApp,
         ObjectIdentifier(DeactivateAppOperation.self):                    .deactivateApp,
         ObjectIdentifier(DownloadAppOperation.self):                      .downloadApp,
-        ObjectIdentifier(EnableJITOperation.self):                        .enableJIT,
-        ObjectIdentifier(ExportResignedAppOperation.self):                .exportResignedApp,
-        ObjectIdentifier(FetchProvisioningProfilesInstallOperation.self): .fetchProvisioningProfilesInstall,
-        ObjectIdentifier(FetchProvisioningProfilesRefreshOperation.self): .fetchProvisioningProfilesRefresh,
+        ObjectIdentifier(ExportResignedIpaOperation.self):                .exportResignedIPA,
+        ObjectIdentifier(FetchProvisioningProfilesOperation.self):        .fetchProvisioningProfiles,
         ObjectIdentifier(InstallAppOperation.self):                       .installApp,
         ObjectIdentifier(MarkAppInactiveOperation.self):                  .markAppInactive,
         ObjectIdentifier(StageBackupAppOperation.self):                   .stageBackupApp,
@@ -62,6 +65,7 @@ enum PipelineStep: OperationStep {
         ObjectIdentifier(RemoveAppExtensionsOperation.self):              .removeAppExtensions,
         ObjectIdentifier(RemoveAppOperation.self):                        .removeApp,
         ObjectIdentifier(ResignAppOperation.self):                        .resignApp,
+        ObjectIdentifier(CreateIpaOperation.self):                        .createIPA,
         ObjectIdentifier(SendAppOperation.self):                          .sendApp,
         ObjectIdentifier(StageAppOperation.self):                         .stageApp,
         ObjectIdentifier(UninstallAppOperation.self):                     .uninstallApp,
@@ -69,7 +73,7 @@ enum PipelineStep: OperationStep {
         ObjectIdentifier(VerifyAppOperation.self):                        .verifyApp,
         ObjectIdentifier(VerifyCertificateOperation.self):                .verifyCertificate,
         ObjectIdentifier(UpdateAppCertificateOperation.self):             .updateAppCertificate,
-        ObjectIdentifier(CacheSigningCertOperation.self):                 .cacheSigningCert,
+        ObjectIdentifier(EmbedSigningCertOperation.self):                 .embedSigningCert,
     ]
 
     static func step(for type: Any.Type) -> PipelineStep? {
@@ -85,23 +89,27 @@ enum PipelineStep: OperationStep {
 }
 
 enum StandaloneStep: OperationStep {
-    case authentication
+    case signIn
+    case preflightChecks
     case backgroundRefreshApps
     case clearAppCache
-    case fetchAnisetteData
-    case fetchAppIDs
+    case enableJIT
+    case syncAppIDs
     case fetchSource
     case scheduleExpirationWarningNotification
+    case injectBatchProfiles
     case unknown
 
     fileprivate static let stepMap: [ObjectIdentifier: StandaloneStep] = [
-        ObjectIdentifier(AuthenticationOperation.self):                          .authentication,
+        ObjectIdentifier(SignInOperation.self):                                  .signIn,
+        ObjectIdentifier(PreflightChecksOperation.self):                         .preflightChecks,
         ObjectIdentifier(BackgroundRefreshAppsOperation.self):                   .backgroundRefreshApps,
         ObjectIdentifier(ClearAppCacheOperation.self):                           .clearAppCache,
-        ObjectIdentifier(FetchAnisetteDataOperation.self):                       .fetchAnisetteData,
-        ObjectIdentifier(SyncAppIDsOperation.self):                              .fetchAppIDs,
+        ObjectIdentifier(EnableJITOperation.self):                               .enableJIT,
+        ObjectIdentifier(SyncAppIDsOperation.self):                              .syncAppIDs,
         ObjectIdentifier(FetchSourceOperation.self):                             .fetchSource,
         ObjectIdentifier(ScheduleExpirationWarningNotificationOperation.self):   .scheduleExpirationWarningNotification,
+        ObjectIdentifier(InjectBatchProfilesOperation.self):                     .injectBatchProfiles,
     ]
 
     static func step(for type: Any.Type) -> StandaloneStep? {

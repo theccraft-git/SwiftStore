@@ -8,7 +8,6 @@
 
 @preconcurrency import UIKit
 import CoreData
-@preconcurrency import AltStoreCore
 import Nuke
 
 @objc(SourcesFooterView)
@@ -36,7 +35,7 @@ final class SourcesViewController: UICollectionViewController
     
     private weak var _installingApp: StoreApp?
     
-    private var placeholderView: RSTPlaceholderView!
+    private var placeholderView: PlaceholderView!
     private var placeholderViewButton: UIButton!
     private var placeholderViewCenterYConstraint: NSLayoutConstraint!
     
@@ -45,8 +44,10 @@ final class SourcesViewController: UICollectionViewController
         super.viewDidLoad()
         
         // Ensure large titles
+        #if !os(tvOS)
         navigationController?.navigationBar.prefersLargeTitles = true
         navigationItem.largeTitleDisplayMode = .automatic
+        #endif
 
         // Set title
         navigationItem.title = "Sources"
@@ -57,7 +58,7 @@ final class SourcesViewController: UICollectionViewController
         
         self.navigationController?.view.tintColor = .altPrimary
         
-        self.collectionView.register(AppBannerCollectionViewCell.self, forCellWithReuseIdentifier: RSTCellContentGenericCellIdentifier)
+        self.collectionView.register(AppBannerCollectionViewCell.self, forCellWithReuseIdentifier: CellContentGenericCellIdentifier)
         
         self.collectionView.dataSource = self.dataSource
         self.collectionView.prefetchDataSource = self.dataSource
@@ -68,7 +69,7 @@ final class SourcesViewController: UICollectionViewController
         backgroundView.backgroundColor = .altBackground
         self.collectionView.backgroundView = backgroundView
         
-        self.placeholderView = RSTPlaceholderView(frame: .zero)
+        self.placeholderView = PlaceholderView(frame: .zero)
         self.placeholderView.translatesAutoresizingMaskIntoConstraints = false
         self.placeholderView.textLabel.text = NSLocalizedString("Add More Sources!", comment: "")
         self.placeholderView.detailTextLabel.text = NSLocalizedString("Sources determine what apps are available in SideStore. The more sources you add, the better your SideStore experience will be.\n\nDon’t know where to start? Try adding one of our Recommended Sources!", comment: "")
@@ -139,9 +140,12 @@ private extension SourcesViewController
     func makeLayout() -> UICollectionViewCompositionalLayout
     {
         var configuration = UICollectionLayoutListConfiguration(appearance: .grouped)
+        #if !os(tvOS)
         configuration.showsSeparators = false
+        #endif
         configuration.backgroundColor = .clear
         
+        #if !os(tvOS)
         configuration.trailingSwipeActionsConfigurationProvider = { [weak self] indexPath in
             guard let self else { return UISwipeActionsConfiguration(actions: []) }
             
@@ -179,12 +183,13 @@ private extension SourcesViewController
             
             return config
         }
+        #endif
         
         let layout = UICollectionViewCompositionalLayout.list(using: configuration)
         return layout
     }
     
-    func makeDataSource() -> RSTFetchedResultsCollectionViewPrefetchingDataSource<Source, UIImage>
+    func makeDataSource() -> FetchedResultsCollectionViewPrefetchingDataSource<Source, UIImage>
     {
         // TODO: @mahee96: Need implementation to keep SideStore-Official source always on top
         let fetchRequest = Source.fetchRequest() as NSFetchRequest<Source>
@@ -199,7 +204,7 @@ private extension SourcesViewController
         let fetchedResultsController = NSFetchedResultsController(fetchRequest: fetchRequest, managedObjectContext: DatabaseManager.shared.viewContext, sectionNameKeyPath: nil, cacheName: nil)
         fetchedResultsController.delegate = self
         
-        let dataSource = RSTFetchedResultsCollectionViewPrefetchingDataSource<Source, UIImage>(fetchedResultsController: fetchedResultsController)
+        let dataSource = FetchedResultsCollectionViewPrefetchingDataSource<Source, UIImage>(fetchedResultsController: fetchedResultsController)
         dataSource.proxy = self
         dataSource.cellConfigurationHandler = { [weak self] (cell, source, indexPath) in
             guard let self else { return }
@@ -218,13 +223,16 @@ private extension SourcesViewController
             let numberOfApps = source.apps.filter { StoreApp.visibleAppsPredicate.evaluate(with: $0) }.count
             
             UIView.performWithoutAnimation {
+                cell.bannerView.button.style = .custom
+                
+                let contentWidth: CGFloat
                 if let error = source.error
                 {
                     let image = UIImage(systemName: "exclamationmark")?.withTintColor(.white, renderingMode: .alwaysOriginal)
-                    
                     cell.bannerView.button.setImage(image, for: .normal)
                     cell.bannerView.button.setTitle(nil, for: .normal)
                     cell.bannerView.button.tintColor = .systemYellow.withAlphaComponent(0.75)
+                    contentWidth = image?.size.width ?? 7.0
                     
                     let action = UIAction(identifier: .showError) { _ in
                         self.present(error)
@@ -234,9 +242,13 @@ private extension SourcesViewController
                 }
                 else
                 {
+                    let text = numberOfApps.description
                     cell.bannerView.button.setImage(nil, for: .normal)
-                    cell.bannerView.button.setTitle(numberOfApps.description, for: .normal)
+                    cell.bannerView.button.setTitle(text, for: .normal)
                     cell.bannerView.button.tintColor = .white.withAlphaComponent(0.2)
+                    
+                    let font = UIFont.boldSystemFont(ofSize: 14)
+                    contentWidth = (text as NSString).size(withAttributes: [.font: font]).width
                     
                     let action = UIAction(identifier: .showDetails) { _ in
                         self.showSourceDetails(for: source)
@@ -244,6 +256,12 @@ private extension SourcesViewController
                     cell.bannerView.button.addAction(action, for: .primaryActionTriggered)
                     cell.bannerView.button.removeAction(identifiedBy: .showError, for: .primaryActionTriggered)
                 }
+                
+                var config = cell.bannerView.button.configuration ?? UIButton.Configuration.plain()
+                config.cornerStyle = .capsule
+                let horizontalPadding = max(0, (31.0 - contentWidth) / 2.0)
+                config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: horizontalPadding, bottom: 0, trailing: horizontalPadding)
+                cell.bannerView.button.configuration = config
             }
             
             let dateText: String
@@ -260,16 +278,8 @@ private extension SourcesViewController
             cell.bannerView.subtitleLabel.text = text
             cell.bannerView.subtitleLabel.numberOfLines = 1
             
-            let numberOfAppsText: String
-            if #available(iOS 15, *)
-            {
-                let attributedOutput = AttributedString(localized: "^[\(numberOfApps) app](inflect: true)")
-                numberOfAppsText = String(attributedOutput.characters)
-            }
-            else
-            {
-                numberOfAppsText = ""
-            }
+            let attributedOutput = AttributedString(localized: "^[\(numberOfApps) app](inflect: true)")
+            let numberOfAppsText = String(attributedOutput.characters)
             
             let accessibilityLabel = source.name + "\n" + text + ".\n" + numberOfAppsText
             cell.bannerView.accessibilityLabel = accessibilityLabel
@@ -288,18 +298,9 @@ private extension SourcesViewController
             // Make sure refresh button is correct size.
             cell.layoutIfNeeded()
         }
-        dataSource.prefetchHandler = { (source, indexPath, completionHandler) in
+        dataSource.prefetchHandler = { (source, indexPath) in
             guard let imageURL = source.effectiveIconURL else { return nil }
-            Task.detached(priority: .background) {
-                ImagePipeline.shared.loadImage(with: imageURL, progress: nil) { result in
-                    switch result
-                    {
-                    case .success(let response): completionHandler(response.image, nil)
-                    case .failure(let error): completionHandler(nil, error)
-                    }
-                }
-            }
-            return nil
+            return try await ImagePipeline.shared.image(for: imageURL)
         }
         dataSource.prefetchCompletionHandler = { (cell, image, indexPath, error) in
             let cell = cell as! AppBannerCollectionViewCell
@@ -365,16 +366,10 @@ private extension SourcesViewController
             
             let backgroundContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
             let source = try await AppManager.shared.fetchSource(sourceURL: url, managedObjectContext: backgroundContext)
-            do
-            {
-                await MainActor.run {
-                    showSourceDetails(for: source)
-                }
-                
-                finish(.success(()))
-            } catch {
-                finish(.failure(error))
+            await MainActor.run {
+                showSourceDetails(for: source)
             }
+            finish(.success(()))
         }
     }
 
@@ -502,54 +497,3 @@ extension SourcesViewController: NSFetchedResultsControllerDelegate
     }
 }
 
-@available(iOS 17, *)
-#Preview(traits: .portrait) {
-    DatabaseManager.shared.startForPreview()
-    
-    let storyboard = UIStoryboard(name: "Sources", bundle: nil)
-    let sourcesViewController = storyboard.instantiateInitialViewController()!
-    
-    let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
-    context.performAndWait {
-        _ = Source.make(name: "OatmealDome's AltStore Source",
-                        groupID: "me.oatmealdome.altstore",
-                        sourceURL: URL(string: "https://altstore.oatmealdome.me")!,
-                        context: context)
-        
-        _ = Source.make(name: "UTM Repository",
-                        groupID: "com.utmapp.repos.UTM",
-                        sourceURL: URL(string: "https://alt.getutm.app")!,
-                        context: context)
-        
-        _ = Source.make(name: "Flyinghead",
-                        groupID: "com.flyinghead.source",
-                        sourceURL: URL(string: "https://flyinghead.github.io/flycast-builds/altstore.json")!,
-                        context: context)
-        
-        _ = Source.make(name: "Provenance",
-                        groupID: "org.provenance-emu.AltStore",
-                        sourceURL: URL(string: "https://provenance-emu.com/apps.json")!,
-                        context: context)
-        
-        _ = Source.make(name: "PojavLauncher Repository",
-                        groupID: "dev.crystall1ne.repos.PojavLauncher",
-                        sourceURL: URL(string: "http://alt.crystall1ne.dev")!,
-                        context: context)
-        
-        try! context.save()
-    }
-    
-    AppManager.shared.fetchSources { result in
-        do
-        {
-            let (_, context) = try result.get()
-            try context.save()
-        }
-        catch
-        {
-            debugLog("Preview failed to fetch sources: \(error)")
-        }
-    }
-    
-    return sourcesViewController
-}

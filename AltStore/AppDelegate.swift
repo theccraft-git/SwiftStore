@@ -10,26 +10,21 @@
 import UserNotifications
 import AVFoundation
 import Intents
-@preconcurrency import AltStoreCore
-@preconcurrency import AltSign
+import SideSign
 import CoreData
-
-
 import Nuke
-
-extension UIApplication: LegacyBackgroundFetching {}
 
 extension AppDelegate
 {
-    static let openPatreonSettingsDeepLinkNotification = Notification.Name(Bundle.Info.appbundleIdentifier + ".OpenPatreonSettingsDeepLinkNotification")
-    static let importAppDeepLinkNotification = Notification.Name(Bundle.Info.appbundleIdentifier + ".ImportAppDeepLinkNotification")
-    static let addSourceDeepLinkNotification = Notification.Name(Bundle.Info.appbundleIdentifier + ".AddSourceDeepLinkNotification")
+    nonisolated static let openPatreonSettingsDeepLinkNotification = Notification.Name(Bundle.Info.appbundleIdentifier + ".OpenPatreonSettingsDeepLinkNotification")
+    nonisolated static let importAppDeepLinkNotification = Notification.Name(Bundle.Info.appbundleIdentifier + ".ImportAppDeepLinkNotification")
+    nonisolated static let addSourceDeepLinkNotification = Notification.Name(Bundle.Info.appbundleIdentifier + ".AddSourceDeepLinkNotification")
     
-    static let appBackupDidFinish = Notification.Name(Bundle.Info.appbundleIdentifier + ".AppBackupDidFinish")
+    nonisolated static let appBackupDidFinish = Notification.Name(Bundle.Info.appbundleIdentifier + ".AppBackupDidFinish")
     
-    static let importAppDeepLinkURLKey = "fileURL"
-    static let appBackupResultKey = "result"
-    static let addSourceDeepLinkURLKey = "sourceURL"
+    nonisolated static let importAppDeepLinkURLKey = "fileURL"
+    nonisolated static let appBackupResultKey = "result"
+    nonisolated static let addSourceDeepLinkURLKey = "sourceURL"
     
     static func dumpSideBackupLogsIfNeeded() async {
         await Task.detached {
@@ -68,8 +63,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 
     var window: UIWindow?
     
+    #if !os(tvOS)
     private let intentHandler = IntentHandler()
     private let viewAppIntentHandler = ViewAppIntentHandler()
+    #endif
     
     public let consoleLog = ConsoleLog()
 
@@ -91,9 +88,14 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         dateFormatter.dateStyle = .medium
         dateFormatter.timeStyle = .medium
         let dateString = dateFormatter.string(from: Date())
-        let paddingCount = 49 - dateString.count
-        let leftPadding = String(repeating: " ", count: max(0, paddingCount / 2))
-        let rightPadding = String(repeating: " ", count: max(0, paddingCount - leftPadding.count))
+        let versionString = Bundle.Info.activeBundleVersion
+
+        func centerInBanner(_ text: String, width: Int = 49) -> String {
+            let padding = max(0, width - text.count)
+            let left = String(repeating: " ", count: padding / 2)
+            let right = String(repeating: " ", count: padding - left.count)
+            return "|\(left)\(text)\(right)|"
+        }
 
         // register console logging and start capturing
         let suffixFormat: SuffixFormat = UserDefaults.standard.isRotateLogsOnStartupEnabled ? .timestamp : .none
@@ -103,12 +105,16 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         // register crash handler
         setupCrashHandler()
         
+        UNUserNotificationCenter.current().delegate = self
+        
         debugLog("===================================================")
         debugLog("|               App is Starting up                |")
         debugLog("===================================================")
         debugLog("| Console Logger started capturing output streams |")
         debugLog("===================================================")
-        debugLog("|\(leftPadding)\(dateString)\(rightPadding)|")
+        debugLog(centerInBanner(versionString))
+        debugLog("===================================================")
+        debugLog(centerInBanner(dateString))
         debugLog("===================================================")
         debugLog("\n")
 
@@ -118,24 +124,28 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 //        UserDefaults.dumpAllSettingsOnBoot()
         #endif
         
+        // Register default settings before doing anything else.
+        UserDefaults.registerDefaults()
+        BackgroundServiceManager.ensureBackgroundServicesStarted()
+        syncMinimuxerBackendFromUserDefaults()
+
         SideStoreLogging.setLogging(UserDefaults.standard.isSideStoreVerboseLoggingEnabled)
-        AltStoreCore.SideStoreLogging.setLogging(UserDefaults.standard.isSideStoreVerboseLoggingEnabled)
         AltSign.setLogging(UserDefaults.standard.isAltSignVerboseLoggingEnabled)
         minimuxerSetLogging(UserDefaults.standard.isMinimuxerVerboseLoggingEnabled)
-
-        // Trigger daily boot sync for Anisette servers if needed
-        Task.detached {
-            await AnisetteServersManager.shared.performDailySyncIfNeeded()
-        }
+        SideSignConfigManager.shared.applyConfigToDeveloperPortal()
 
         // Override point for customization after application launch.
 //        UserDefaults.standard.setValue(true, forKey: "com.apple.CoreData.MigrationDebug")
 //        UserDefaults.standard.setValue(true, forKey: "com.apple.CoreData.SQLDebug")
+        
 
-        // Register default settings before doing anything else.
-        UserDefaults.registerDefaults()
-        
-        
+        // Trigger daily boot sync for Anisette servers if needed
+        if !UserDefaults.standard.useOnDeviceAnisette{
+            Task.detached {
+                await AnisetteServersManager.shared.performDailySyncIfNeeded()
+            }
+        }
+
         // Recreate Database if requested
         // NOTE: Userdefaults are local to the SideStore.app sandbox and are not shared
         if UserDefaults.standard.recreateDatabaseOnNextStart{
@@ -153,37 +163,46 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             debugLog("[AppDelegate] Boot sequence completed.")
         }
         
-        DatabaseManager.shared.start { (error) in
-            if let error = error
+        
+        let isFirstLaunch = (UserDefaults.standard.firstLaunch == nil)
+        if isFirstLaunch
+        {
+            UserDefaults.standard.firstLaunch = Date()
+        }
+        
+        Task.detached(priority: .userInitiated) {
+            do
+            {
+                await MaintenanceManager.shared.performDatabaseMigrationIfNeeded()
+                
+                debugLog("Starting DatabaseManager...")
+                try await DatabaseManager.shared.start()
+                debugLog("Started DatabaseManager.")
+                
+                debugLog("Reconciling any staged drafts started...")
+                await Self.reconcileSelfReinstallationIfNeeded()
+                debugLog("Reconcile any staged drafts completed.")
+                
+                await WidgetDataManager.publishCurrentInstalledAppsIfNeeded(in: DatabaseManager.shared.viewContext)
+                
+                if isFirstLaunch
+                {
+                    await AuthManager.shared.signOut()
+                }
+
+                // Perform one-time maintenance tasks after database is started
+                await MaintenanceManager.shared.performMaintenanceIfNeeded()
+            }
+            catch
             {
                 debugLog("Failed to start DatabaseManager. Error: \(error)")
-            }
-            else
-            {
-                debugLog("Started DatabaseManager.")
-                debugLog("Reconciling any staged drafts started...")
-                Self.reconcileSelfReinstallationIfNeeded()
-                debugLog("Reconcile any staged drafts completed.")
             }
         }
         
         self.setTintColor()
         self.prepareImageCache()
 
-        // TODO: @mahee96: find if we need to start em_proxy as in altstore?
-        if UserDefaults.standard.enableEMPforWireguard {
-            startEMProxy(bind_addr: AppConstants.Proxy.serverURL)
-        }
-
         SecureValueTransformer.register()        
-        
-        if UserDefaults.standard.firstLaunch == nil
-        {
-            Keychain.shared.reset()
-            UserDefaults.standard.firstLaunch = Date()
-        }
-        
-        UserDefaults.standard.preferredServerID = Bundle.main.object(forInfoDictionaryKey: Bundle.Info.serverID) as? String
         
         #if DEBUG && targetEnvironment(simulator)
         UserDefaults.standard.isDebugModeEnabled = true
@@ -196,19 +215,19 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     
     func applicationDidEnterBackground(_ application: UIApplication)
     {
+        BackgroundServiceManager.ensureBackgroundServicesStarted()
         // Make sure to update SceneDelegate.sceneDidEnterBackground() as well.
-        // TODO: @mahee96: find if we need to stop em_proxy as in altstore?
-        if UserDefaults.standard.enableEMPforWireguard {
-            stopEMProxy()
-        }
         guard let oneMonthAgo = Calendar.current.date(byAdding: .month, value: -1, to: Date()) else { return }
         
         let midnightOneMonthAgo = Calendar.current.startOfDay(for: oneMonthAgo)
-        DatabaseManager.shared.purgeLoggedErrors(before: midnightOneMonthAgo) { result in
-            switch result
+        Task.detached(priority: .background) {
+            do
             {
-            case .success: break
-            case .failure(let error): debugLog("[ALTLog] Failed to purge logged errors before \(midnightOneMonthAgo). \(error)")
+                try await DatabaseManager.shared.purgeLoggedErrors(before: midnightOneMonthAgo)
+            }
+            catch
+            {
+                debugLog("[SideStore] Failed to purge logged errors before \(midnightOneMonthAgo). \(error)")
             }
         }
              
@@ -216,9 +235,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func applicationWillEnterForeground(_ application: UIApplication)
     {
-        if UserDefaults.standard.enableEMPforWireguard {
-            startEMProxy(bind_addr: AppConstants.Proxy.serverURL)
-        }
+        BackgroundServiceManager.ensureBackgroundServicesStarted()
         Task.detached {
             await AppManager.shared.reconcileInstalledApps()
         }
@@ -237,6 +254,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         return self.open(url)
     }
     
+    #if !os(tvOS)
     func application(_ application: UIApplication, handlerFor intent: INIntent) -> Any?
     {
         switch intent
@@ -246,6 +264,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         default: return nil
         }
     }
+    #endif
     
     func applicationWillTerminate(_ application: UIApplication) {
         // Stop console logging and clean up resources
@@ -304,7 +323,7 @@ private extension AppDelegate
         
         ImagePipeline.shared = pipeline
         
-        if let dataCache = ImagePipeline.shared.configuration.dataCache as? DataCache, #available(iOS 15, *)
+        if let dataCache = ImagePipeline.shared.configuration.dataCache as? DataCache
         {
             debugLog("[AppDelegate] Current image cache size: \(dataCache.totalSize.formatted(.byteCount(style: .file)))")
         }
@@ -360,10 +379,8 @@ extension AppDelegate
 {
     private func prepareForBackgroundFetch()
     {
-        // "Fetch" every hour, but then refresh only those that need to be refreshed (so we don't drain the battery).
-        (UIApplication.shared as LegacyBackgroundFetching).setMinimumBackgroundFetchInterval(1 * 60 * 60)
-        
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { (success, error) in
+            // no-op
         }
         
         #if DEBUG && targetEnvironment(simulator)
@@ -390,6 +407,8 @@ extension AppDelegate
     
     func application(_ application: UIApplication, performFetchWithCompletionHandler backgroundFetchCompletionHandler: @escaping (UIBackgroundFetchResult) -> Void)
     {
+        BackgroundServiceManager.ensureBackgroundServicesStarted()
+        #if !os(tvOS)
         if UserDefaults.standard.isBackgroundRefreshEnabled && !UserDefaults.standard.presentedLaunchReminderNotification
         {
             let threeHours: TimeInterval = 3 * 60 * 60
@@ -404,6 +423,7 @@ extension AppDelegate
             
             UserDefaults.standard.presentedLaunchReminderNotification = true
         }
+        #endif
         
         BackgroundTaskManager.shared.performExtendedBackgroundTask { (taskResult, taskCompletionHandler) in
             if let error = taskResult.error
@@ -414,29 +434,19 @@ extension AppDelegate
                 return
             }
             
-            if !DatabaseManager.shared.isStarted
-            {
-                DatabaseManager.shared.start() { (error) in
-                    if error != nil
-                    {
-                        backgroundFetchCompletionHandler(.failed)
+            Task.detached(priority: .userInitiated) {
+                do
+                {
+                    try await DatabaseManager.shared.start()
+                    self.performBackgroundFetch { (backgroundFetchResult) in
+                        backgroundFetchCompletionHandler(backgroundFetchResult)
+                    } refreshAppsCompletionHandler: { (refreshAppsResult) in
                         taskCompletionHandler()
                     }
-                    else
-                    {
-                        self.performBackgroundFetch { (backgroundFetchResult) in
-                            backgroundFetchCompletionHandler(backgroundFetchResult)
-                        } refreshAppsCompletionHandler: { (refreshAppsResult) in
-                            taskCompletionHandler()
-                        }
-                    }
                 }
-            }
-            else
-            {
-                self.performBackgroundFetch { (backgroundFetchResult) in
-                    backgroundFetchCompletionHandler(backgroundFetchResult)
-                } refreshAppsCompletionHandler: { (refreshAppsResult) in
+                catch
+                {
+                    backgroundFetchCompletionHandler(.failed)
                     taskCompletionHandler()
                 }
             }
@@ -501,6 +511,7 @@ private extension AppDelegate
                 let updates = try context.fetch(updatesFetchRequest)
                 let newsItems = try context.fetch(newsItemsFetchRequest)
                 
+                #if !os(tvOS)
                 for update in updates
                 {
                     guard let storeApp = update.storeApp, let latestSupportedVersion = storeApp.latestSupportedVersion, latestSupportedVersion.isSupported else { continue }
@@ -548,6 +559,18 @@ private extension AppDelegate
                     let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
                     UNUserNotificationCenter.current().add(request)
                 }
+                #else
+                DispatchQueue.main.async {
+                    if UIApplication.shared.applicationState == .active {
+                        if !updates.isEmpty, let window = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.windows.first(where: { $0.isKeyWindow }) }).first {
+                            let toastView = ToastView(text: "New Update Available", detailText: "\(updates.count) update(s) available")
+                            toastView.show(in: window)
+                        }
+                    } else {
+                        NotificationCenter.default.post(name: NSNotification.Name("TVTopShelfItemsDidChangeNotification"), object: nil)
+                    }
+                }
+                #endif
 
                 DispatchQueue.main.async {
                     UIApplication.shared.applicationIconBadgeNumber = updates.count
@@ -573,7 +596,7 @@ private extension AppDelegate {
             let stackTrace = exception.callStackSymbols.joined(separator: "\n")
             let message = """
             \n===================================================
-            |                UNCAUGHT CRASH                   |
+            |           UNCAUGHT NSEXCEPTION CRASH            |
             ===================================================
               • Name: \(exception.name.rawValue)
               • Reason: \(exception.reason ?? "Unknown")
@@ -591,6 +614,43 @@ private extension AppDelegate {
             
             // Also write to NSLog (Apple System Log)
             NSLog("%@", message)
+        }
+        
+        let fatalSignals = [SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP]
+        for sig in fatalSignals {
+            signal(sig) { signalNumber in
+                signal(signalNumber, SIG_DFL)
+                
+                let signalName: String
+                switch signalNumber {
+                case SIGABRT: signalName = "SIGABRT (Abort/Assertion Failure)"
+                case SIGSEGV: signalName = "SIGSEGV (Segmentation Fault)"
+                case SIGBUS: signalName = "SIGBUS (Bus Error)"
+                case SIGILL: signalName = "SIGILL (Illegal Instruction)"
+                case SIGFPE: signalName = "SIGFPE (Floating Point Exception)"
+                case SIGTRAP: signalName = "SIGTRAP (Trace Trap)"
+                default: signalName = "Signal \(signalNumber)"
+                }
+                
+                let stackTrace = Thread.callStackSymbols.joined(separator: "\n")
+                let message = """
+                \n===================================================
+                |             UNCAUGHT FATAL SIGNAL               |
+                ===================================================
+                  • Signal: \(signalName)
+                
+                Call Stack:
+                \(stackTrace)
+                ===================================================\n
+                """
+                
+                debugLog(message)
+                fputs(message, stderr)
+                fflush(stderr)
+                NSLog("%@", message)
+                
+                raise(signalNumber)
+            }
         }
     }
     
@@ -617,32 +677,22 @@ private extension AppDelegate {
             return
         }
         
-        let stagedUUID = stagedData["lastRunningProfileUUID"] as? String
+        let lastBundlePath = stagedData["lastBundlePath"] as? String
+        let currBundlePath = Bundle.main.bundlePath
+        debugLog("[AppDelegate] reconcileSelfReinstallation: Current BundlePath: '\(currBundlePath)', Last BundlePath: '\(lastBundlePath ?? "nil")'")
         
-        let profileURL = Bundle.main.bundleURL.appendingPathComponent("embedded.mobileprovision")
-        guard FileManager.default.fileExists(atPath: profileURL.path) else {
-            debugLog("[AppDelegate] reconcileSelfReinstallation: embedded.mobileprovision not found.")
-            return
-        }
-        
-        guard let profile = ALTProvisioningProfile(url: profileURL) else {
-            debugLog("[AppDelegate] reconcileSelfReinstallation: Failed to parse embedded.mobileprovision.")
-            return
-        }
-        
-        let currentUUID = profile.UUID.uuidString
-        debugLog("[AppDelegate] reconcileSelfReinstallation: Current UUID: \(currentUUID), Staged UUID: \(stagedUUID ?? "nil")")
-        
-        if currentUUID == stagedUUID {
-            debugLog("[AppDelegate] reconcileSelfReinstallation: UUID matches! Applying staged updates to SideStore app in database.")
+        if let lastBundlePath, currBundlePath != lastBundlePath {
+            debugLog("[AppDelegate] reconcileSelfReinstallation: App reinstallation confirmed (BundlePath changed)! Applying staged updates to SideStore app in database.")
             let context = DatabaseManager.shared.persistentContainer.newBackgroundContext()
             context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
             
+            var didSave = false
             context.performAndWait {
                 do {
                     if let _ = InstalledApp.deserialize(from: jsonData, format: .json, context: context) {
                         if context.hasChanges {
                             try context.save()
+                            didSave = true
                             debugLog("[AppDelegate] reconcileSelfReinstallation: Database successfully updated and saved.")
                         }
                     } else {
@@ -652,8 +702,20 @@ private extension AppDelegate {
                     debugLog("[AppDelegate] reconcileSelfReinstallation: CoreData error during save: \(error)")
                 }
             }
+            
+            if didSave {
+                Task {
+                    await WidgetDataManager.publishCurrentInstalledApps(in: context)
+                }
+            }
         } else {
-            debugLog("[AppDelegate] reconcileSelfReinstallation: UUID mismatch. Reinstallation was not completed or failed.")
+            debugLog("[AppDelegate] reconcileSelfReinstallation: BundlePath matched pre-installation path. Reinstallation was not completed or failed.")
         }
+    }
+}
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
     }
 }

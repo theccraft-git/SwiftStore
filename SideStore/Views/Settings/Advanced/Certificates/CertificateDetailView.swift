@@ -7,22 +7,43 @@
 //
 
 import SwiftUI
-@preconcurrency import AltSign
+import SideSign
 
 struct DeveloperPortalMetadata {
     var identifier: String?
     var machineName: String?
     var machineIdentifier: String?
     var requesterEmail: String?
+    var requesterFirstName: String?
+    var requesterLastName: String?
+    var displayName: String?
+    var certificateType: String? = nil
+    var certificateTypeName: String? = nil
+    var certificateTypeId: String? = nil
+    var platform: String? = nil
+    var platformName: String? = nil
+    var isManaged: Bool? = nil
+    var status: String? = nil
+    var ownerName: String? = nil
+    var ownerId: String? = nil
+    var autoRotationEnabled: Bool? = nil
+    var requestedDate: String? = nil
+    var serialNumDecimal: String? = nil
 }
 
 struct CertificateDetailView: View {
-    let certificate: ALTCertificate
+    let certificate: ALTX509Certificate
     let portalMetadata: DeveloperPortalMetadata?
+    @ObservedObject var viewModel: CertificatesViewModel
     
-    init(certificate: ALTCertificate, portalMetadata: DeveloperPortalMetadata? = nil) {
+    private var signableCert: ALTCertificate? {
+        viewModel.getSignableCertificate(for: certificate.serialNumber)
+    }
+    
+    init(certificate: ALTX509Certificate, portalMetadata: DeveloperPortalMetadata? = nil, viewModel: CertificatesViewModel) {
         self.certificate = certificate
         self.portalMetadata = portalMetadata
+        self.viewModel = viewModel
     }
     
     @State private var isRedacted = true
@@ -36,31 +57,47 @@ struct CertificateDetailView: View {
     @State private var copiedFingerprintSHA256 = false
     
     var body: some View {
-        let briefInfo = getBriefInfo(for: certificate.data)
         Form {
             Section {
-                detailRow(title: "Common Name", value: redactableValue(certificate.name))
-                if let machineName = portalMetadata?.machineName {
-                    detailRow(title: "Machine Name", value: redactableValue(machineName))
-                }
-                detailRow(title: "Type", value: briefInfo?.type ?? "Developer Certificate")
-                detailRow(title: "Valid From", value: briefInfo?.validFrom ?? "N/A")
-                detailRow(title: "Valid Until", value: briefInfo?.validUntil ?? "N/A")
-                detailRowWithCopy(title: "Serial Number", value: certificate.serialNumber, isCopied: $copiedSerialNumber)
-            } header: {
-                Text("Basic Information")
-            }
-            
-            if let metadata = portalMetadata {
                 Section {
-                    if let identifier = metadata.identifier {
+                    if let identifier = portalMetadata?.identifier ?? certificate.identifier {
                         detailRowWithCopy(title: "Certificate ID", value: identifier, isCopied: $copiedIdentifier)
                     }
-                    if let machineID = metadata.machineIdentifier {
+                    if let certType = portalMetadata?.certificateType ?? certificate.certificateType {
+                        detailRow(title: "Certificate Type", value: certType)
+                    }
+                    if let typeName = portalMetadata?.certificateTypeName ?? certificate.certificateTypeName {
+                        detailRow(title: "Type Name", value: typeName)
+                    }
+                    if let managed = portalMetadata?.isManaged ?? certificate.isManaged {
+                        detailRow(title: "Managed", value: managed ? "Yes (Xcode Cloud)" : "No")
+                    }
+                    if let status = portalMetadata?.status ?? certificate.status {
+                        detailRow(title: "Status", value: status)
+                    }
+                    if let platform = portalMetadata?.platform ?? certificate.platform {
+                        detailRow(title: "Platform", value: platform)
+                    }
+                    if let platformName = portalMetadata?.platformName ?? certificate.platformName {
+                        detailRow(title: "Platform Name", value: platformName)
+                    }
+                    if let machineID = portalMetadata?.machineIdentifier ?? certificate.machineIdentifier {
                         detailRow(title: "Machine ID", value: machineID)
                     }
-                    if let email = metadata.requesterEmail {
+                    if let createdBy = portalMetadata?.requesterFirstName ?? certificate.requesterFirstName {
+                        detailRow(title: "Created By", value: redactableValue(createdBy))
+                    }
+                    if let email = portalMetadata?.requesterEmail ?? certificate.requesterEmail {
                         detailRow(title: "Requester Email", value: redactableValue(email))
+                    }
+                    if let ownerName = portalMetadata?.ownerName ?? certificate.ownerName {
+                        detailRow(title: "Owner Name", value: redactableValue(ownerName))
+                    }
+                    if let ownerId = portalMetadata?.ownerId ?? certificate.ownerId {
+                        detailRow(title: "Owner ID", value: redactableValue(ownerId))
+                    }
+                    if let autoRotation = portalMetadata?.autoRotationEnabled ?? certificate.autoRotationEnabled {
+                        detailRow(title: "Auto-Rotation", value: autoRotation ? "Enabled" : "Disabled")
                     }
                 } header: {
                     Text("Developer Portal Info")
@@ -113,6 +150,7 @@ struct CertificateDetailView: View {
                                 .foregroundColor(.primary)
                             Spacer()
                             
+                            #if !os(tvOS)
                             SwiftUI.Button {
                                 UIPasteboard.general.string = details.fingerprintSHA1
                                 copiedFingerprintSHA1 = true
@@ -125,11 +163,14 @@ struct CertificateDetailView: View {
                                     .foregroundColor(copiedFingerprintSHA1 ? .green : .accentColor)
                             }
                             .buttonStyle(.plain)
+                            #endif
                         }
                         Text(details.fingerprintSHA1)
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(.secondary)
+                            #if !os(tvOS)
                             .textSelection(.enabled)
+                            #endif
                             .lineLimit(nil)
                             .multilineTextAlignment(.leading)
                     }
@@ -142,6 +183,7 @@ struct CertificateDetailView: View {
                                 .foregroundColor(.primary)
                             Spacer()
                             
+                            #if !os(tvOS)
                             SwiftUI.Button {
                                 UIPasteboard.general.string = details.fingerprintSHA256
                                 copiedFingerprintSHA256 = true
@@ -154,11 +196,14 @@ struct CertificateDetailView: View {
                                     .foregroundColor(copiedFingerprintSHA256 ? .green : .accentColor)
                             }
                             .buttonStyle(.plain)
+                            #endif
                         }
                         Text(details.fingerprintSHA256)
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(.secondary)
+                            #if !os(tvOS)
                             .textSelection(.enabled)
+                            #endif
                             .lineLimit(nil)
                             .multilineTextAlignment(.leading)
                     }
@@ -169,9 +214,9 @@ struct CertificateDetailView: View {
             }
             
             Section {
-                detailRow(title: "Has Private Key", value: certificate.privateKey != nil ? "Yes" : "No")
+                detailRow(title: "Has Private Key", value: signableCert != nil ? "Yes" : "No")
                 
-                if let privateKey = certificate.privateKey {
+                if let privateKey = signableCert?.privateKey {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text("Private Key Data")
@@ -187,6 +232,7 @@ struct CertificateDetailView: View {
                             }
                             .buttonStyle(.plain)
                             
+                            #if !os(tvOS)
                             SwiftUI.Button {
                                 UIPasteboard.general.string = privateKey.base64EncodedString()
                                 copiedPrivateKey = true
@@ -199,13 +245,16 @@ struct CertificateDetailView: View {
                             }
                             .buttonStyle(.plain)
                             .padding(.leading, 12)
+                            #endif
                         }
                         
                         if showPrivateKey {
                             Text(privateKey.base64EncodedString())
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(.secondary)
+                                #if !os(tvOS)
                                 .textSelection(.enabled)
+                                #endif
                                 .lineLimit(nil)
                                 .multilineTextAlignment(.leading)
                         } else {
@@ -225,6 +274,7 @@ struct CertificateDetailView: View {
                                 .foregroundColor(.primary)
                             Spacer()
                             
+                            #if !os(tvOS)
                             SwiftUI.Button {
                                 let pem = String(data: certData, encoding: .utf8) ?? certData.base64EncodedString()
                                 UIPasteboard.general.string = pem
@@ -237,13 +287,16 @@ struct CertificateDetailView: View {
                                     .foregroundColor(copiedPEM ? .green : .accentColor)
                             }
                             .buttonStyle(.plain)
+                            #endif
                         }
                         
                         ScrollView(.horizontal, showsIndicators: true) {
                             Text(String(data: certData, encoding: .utf8) ?? certData.base64EncodedString())
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(.secondary)
+                                #if !os(tvOS)
                                 .textSelection(.enabled)
+                                #endif
                                 .fixedSize(horizontal: true, vertical: false)
                         }
                     }
@@ -254,7 +307,9 @@ struct CertificateDetailView: View {
             }
         }
         .navigationTitle("Certificate Details")
+        #if !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 SwiftUI.Button {
@@ -290,7 +345,9 @@ struct CertificateDetailView: View {
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.trailing)
+                #if !os(tvOS)
                 .textSelection(.enabled)
+                #endif
         }
     }
     
@@ -304,8 +361,11 @@ struct CertificateDetailView: View {
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.trailing)
+                #if !os(tvOS)
                 .textSelection(.enabled)
+                #endif
             
+            #if !os(tvOS)
             if value != "N/A" && !value.isEmpty && value != "••••••••" {
                 SwiftUI.Button {
                     UIPasteboard.general.string = value
@@ -321,6 +381,7 @@ struct CertificateDetailView: View {
                 .buttonStyle(.plain)
                 .padding(.leading, 8)
             }
+            #endif
         }
     }
 }

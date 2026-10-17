@@ -9,8 +9,7 @@
 @preconcurrency import UIKit
 import Foundation
 import CoreData
-@preconcurrency import AltStoreCore
-@preconcurrency import AltSign
+import SideSign
 
 final class PipelineExecutor: @unchecked Sendable {
     static let shared = PipelineExecutor()
@@ -26,7 +25,7 @@ final class PipelineExecutor: @unchecked Sendable {
         operation: AppOperation,
         group: RefreshGroup,
         downloadingApp: AppProtocol,
-        permissionsMode: VerifyAppOperation.PermissionReviewMode,
+        permissionsMode: PermissionReviewMode,
         operationProgress: Progress?
     ) async throws -> InstalledApp {
         var finalApp: InstalledApp?
@@ -46,7 +45,7 @@ final class PipelineExecutor: @unchecked Sendable {
         }
         
         guard let resultApp = finalApp ?? context.installedApp ?? (operation.app as? InstalledApp) else {
-            throw OperationError.appNotFound(name: operation.app.name)
+            throw OperationError.invalidParameters("Could not resolve installed app for '\(operation.app.name)'")
         }
         return resultApp
     }
@@ -57,7 +56,7 @@ final class PipelineExecutor: @unchecked Sendable {
         appOperation: AppOperation,
         group: RefreshGroup,
         downloadingApp: AppProtocol,
-        permissionsMode: VerifyAppOperation.PermissionReviewMode,
+        permissionsMode: PermissionReviewMode,
         progress: Progress?
     ) async throws -> InstalledApp? {
         var result: Any? = "()"
@@ -71,9 +70,9 @@ final class PipelineExecutor: @unchecked Sendable {
             switch step {
             case .preflightChecks:
                 loggerType = PreflightChecksOperation.self
-                let presentingViewController = group.context.presentingViewController
+                let handler = context.handler.preflightChecksHandler
                 let step = try PreflightChecksOperation(operations: [appOperation],
-                                                        presentingViewController: presentingViewController,
+                                                        handler: handler,
                                                         context: group.context)
                 result = try await step.execute(parentProgress: progress)
                 return nil
@@ -120,17 +119,9 @@ final class PipelineExecutor: @unchecked Sendable {
                 result = try await step.execute(parentProgress: progress)
                 return nil
                 
-            case .fetchProvisioningProfilesInstall:
-                loggerType = FetchProvisioningProfilesInstallOperation.self
-                let step = try FetchProvisioningProfilesInstallOperation(context: context)
-                let profiles = try await step.execute(parentProgress: progress)
-                context.provisioningProfiles = profiles
-                result = profiles
-                return nil
-                
-            case .fetchProvisioningProfilesRefresh:
-                loggerType = FetchProvisioningProfilesRefreshOperation.self
-                let step = try FetchProvisioningProfilesRefreshOperation(context: context)
+            case .fetchProvisioningProfiles:
+                loggerType = FetchProvisioningProfilesOperation.self
+                let step = try FetchProvisioningProfilesOperation(context: context)
                 let profiles = try await step.execute(parentProgress: progress)
                 context.provisioningProfiles = profiles
                 result = profiles
@@ -156,10 +147,18 @@ final class PipelineExecutor: @unchecked Sendable {
                 result = resignedAppBundle
                 return nil
                 
-            case .exportResignedApp:
-                loggerType = ExportResignedAppOperation.self
-                let step = try ExportResignedAppOperation(context: context)
+            case .exportResignedIPA:
+                loggerType = ExportResignedIpaOperation.self
+                let step = try ExportResignedIpaOperation(context: context)
                 result = try await step.execute(parentProgress: progress)
+                return nil
+                
+            case .createIPA:
+                loggerType = CreateIpaOperation.self
+                let step = try CreateIpaOperation(context: context)
+                let ipaURL = try await step.execute(parentProgress: progress)
+                context.ipaURL = ipaURL
+                result = ipaURL
                 return nil
                 
             case .sendApp:
@@ -247,12 +246,6 @@ final class PipelineExecutor: @unchecked Sendable {
                 result = installedApp
                 return installedApp
                 
-            case .enableJIT:
-                loggerType = EnableJITOperation.self
-                let step = try EnableJITOperation(context: context)
-                result = try await step.execute(parentProgress: progress)
-                return nil
-                
             case .cleanStagedApp:
                 loggerType = CleanStagedAppOperation.self
                 let step = try CleanStagedAppOperation(context: context)
@@ -273,9 +266,27 @@ final class PipelineExecutor: @unchecked Sendable {
                 result = try await step.execute(parentProgress: progress)
                 return nil
                 
+            case .embedSigningCert:
+                loggerType = EmbedSigningCertOperation.self
+                let step = try EmbedSigningCertOperation(context: context)
+                result = try await step.execute(parentProgress: progress)
+                return nil
+
             case .cacheSigningCert:
                 loggerType = CacheSigningCertOperation.self
                 let step = try CacheSigningCertOperation(context: context)
+                result = try await step.execute(parentProgress: progress)
+                return nil
+
+            case .cacheResignedMetadata:
+                loggerType = CacheResignedMetadataOperation.self
+                let step = try CacheResignedMetadataOperation(context: context)
+                result = try await step.execute(parentProgress: progress)
+                return nil
+
+            case .patchInfoPlist:
+                loggerType = PatchInfoPlistOperation.self
+                let step = try PatchInfoPlistOperation(context: context)
                 result = try await step.execute(parentProgress: progress)
                 return nil
             }

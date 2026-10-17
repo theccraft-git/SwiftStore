@@ -7,9 +7,7 @@
 //
 
 @preconcurrency import UIKit
-@preconcurrency import AltStoreCore
-
-import Nuke
+@preconcurrency import Nuke
 
 private let minimumItemSpacing = 8.0
 
@@ -54,7 +52,11 @@ class AppCardCollectionViewCell: UICollectionViewCell
         self.bannerView = AppBannerView(frame: .zero)
         self.bannerView.layoutMargins.bottom = 0
         
+        #if !os(tvOS)
         let vibrancyEffect = UIVibrancyEffect(blurEffect: UIBlurEffect(style: .systemChromeMaterial), style: .secondaryLabel)
+        #else
+        let vibrancyEffect = UIVibrancyEffect(blurEffect: UIBlurEffect(style: .regular))
+        #endif
         let captionVibrancyView = UIVisualEffectView(effect: vibrancyEffect)
         
         self.captionLabel = UILabel(frame: .zero)
@@ -114,7 +116,7 @@ class AppCardCollectionViewCell: UICollectionViewCell
         self.screenshotsCollectionView.panGestureRecognizer.require(toFail: self.topAreaPanGestureRecognizer)
         self.screenshotsCollectionView.addGestureRecognizer(self.topAreaPanGestureRecognizer)
         
-        self.screenshotsCollectionView.register(AppScreenshotCollectionViewCell.self, forCellWithReuseIdentifier: RSTCellContentGenericCellIdentifier)
+        self.screenshotsCollectionView.register(AppScreenshotCollectionViewCell.self, forCellWithReuseIdentifier: CellContentGenericCellIdentifier)
         
         self.stackView.isLayoutMarginsRelativeArrangement = true
         self.stackView.layoutMargins.bottom = inset
@@ -149,6 +151,13 @@ private extension AppCardCollectionViewCell
         let layout = UICollectionViewCompositionalLayout(sectionProvider: { [weak self] (sectionIndex, layoutEnvironment) -> NSCollectionLayoutSection? in
             guard let self else { return nil }
             
+            guard !self.screenshots.isEmpty else {
+                let itemSize = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1.0), heightDimension: .fractionalHeight(1.0))
+                let item = NSCollectionLayoutItem(layoutSize: itemSize)
+                let group = NSCollectionLayoutGroup.horizontal(layoutSize: itemSize, subitems: [item])
+                return NSCollectionLayoutSection(group: group)
+            }
+            
             var contentWidth = 0.0
             var numberOfVisibleScreenshots = 0
             
@@ -182,6 +191,13 @@ private extension AppCardCollectionViewCell
                 
                 contentWidth = totalContentWidth
                 numberOfVisibleScreenshots += 1
+            }
+            
+            guard numberOfVisibleScreenshots > 0 else {
+                let itemSize = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1.0), heightDimension: .fractionalHeight(1.0))
+                let item = NSCollectionLayoutItem(layoutSize: itemSize)
+                let group = NSCollectionLayoutGroup.horizontal(layoutSize: itemSize, subitems: [item])
+                return NSCollectionLayoutSection(group: group)
             }
             
             // Use .estimated(1) to ensure we don't over-estimate widths, which can cause incorrect layouts for the last group.
@@ -229,13 +245,42 @@ private extension AppCardCollectionViewCell
         return layout
     }
     
-    func makeDataSource() -> RSTArrayCollectionViewPrefetchingDataSource<AppScreenshot, UIImage>
+    func makeDataSource() -> ArrayCollectionViewPrefetchingDataSource<AppScreenshot, UIImage>
     {
-        let dataSource = RSTArrayCollectionViewPrefetchingDataSource<AppScreenshot, UIImage>(items: [])
+        let dataSource = ArrayCollectionViewPrefetchingDataSource<AppScreenshot, UIImage>(items: [])
         dataSource.cellConfigurationHandler = { (cell, screenshot, indexPath) in
             let cell = cell as! AppScreenshotCollectionViewCell
             cell.imageView.image = nil
             cell.imageView.isIndicatingActivity = true
+            cell.reloadImageView.isHidden = true
+            
+            cell.onRetry = { [weak cell] in
+                guard let cell = cell else { return }
+                cell.imageView.isIndicatingActivity = true
+                cell.reloadImageView.isHidden = true
+                
+                let imageURL = screenshot.imageURL
+                let request = ImageRequest(
+                    url: imageURL,
+                    processors: [ImageProcessors.Resize(size: CGSize(width: 250, height: 500))]
+                )
+                Task { [weak cell] in
+                    do
+                    {
+                        let image = try await ImagePipeline.shared.image(for: request)
+                        guard let cell else { return }
+                        cell.imageView.isIndicatingActivity = false
+                        cell.setImage(image)
+                    }
+                    catch
+                    {
+                        guard let cell else { return }
+                        cell.imageView.isIndicatingActivity = false
+                        cell.setImage(nil)
+                        cell.reloadImageView.isHidden = false
+                    }
+                }
+            }
             
             var aspectRatio = screenshot.aspectRatio
             if aspectRatio.width > aspectRatio.height
@@ -256,19 +301,13 @@ private extension AppCardCollectionViewCell
             
             cell.aspectRatio = aspectRatio
         }
-        dataSource.prefetchHandler = { (screenshot, indexPath, completionHandler) in
-            let imageURL = screenshot.imageURL
-            Task.detached(priority: .background) {
-                let request = ImageRequest(url: imageURL)
-                ImagePipeline.shared.loadImage(with: request, progress: nil) { result in
-                    switch result
-                    {
-                    case .success(let response): completionHandler(response.image, nil)
-                    case .failure(let error): completionHandler(nil, error)
-                    }
-                }
-            }
-            return nil
+        dataSource.prefetchHandler = { (screenshot, indexPath) in
+            debugLog("Loading screenshot from \(screenshot.imageURL) at index \(indexPath.item)")
+            let request = ImageRequest(
+                url: screenshot.imageURL,
+                processors: [ImageProcessors.Resize(size: CGSize(width: 250, height: 500))]
+            )
+            return try await ImagePipeline.shared.image(for: request)
         }
         dataSource.prefetchCompletionHandler = { (cell, image, indexPath, error) in
             let cell = cell as! AppScreenshotCollectionViewCell
@@ -277,7 +316,18 @@ private extension AppCardCollectionViewCell
             
             if let error = error
             {
-                debugLog("Error loading image: \(error)")
+                debugLog("Error loading image at index \(indexPath.item): \(error.localizedDescription)")
+                cell.reloadImageView.isHidden = false
+            }
+            else if image == nil
+            {
+                debugLog("Loaded image is nil at index \(indexPath.item)")
+                cell.reloadImageView.isHidden = false
+            }
+            else
+            {
+                debugLog("Successfully loaded image at index \(indexPath.item) with size: \(image?.size ?? .zero)")
+                cell.reloadImageView.isHidden = true
             }
         }
         

@@ -7,7 +7,6 @@
 //
 
 import Foundation
-@preconcurrency import AltStoreCore
 
 import Nuke
 
@@ -48,8 +47,12 @@ class ClearAppCacheOperation: BaseStandaloneOperation<StandaloneOperationContext
     }
     
     override func execute(parentProgress: Progress?) async throws -> Bool {
+        let startTime = CFAbsoluteTimeGetCurrent()
         debugLog("[ClearAppCacheOperation] execute() started")
-        defer { debugLog("[ClearAppCacheOperation] execute() completed") }
+        defer {
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            debugLog("[ClearAppCacheOperation] execute() took: \(String(format: "%.3fs", elapsed))")
+        }
         try await super.executePreconditionCheck(parentProgress: parentProgress)
         self.setProgress(10)
         self.clearNukeCache()
@@ -120,7 +123,7 @@ class ClearAppCacheOperation: BaseStandaloneOperation<StandaloneOperationContext
     
     private func removeUninstalledAppBackupDirectories() async throws {
         guard let backupsDirectory = FileManager.default.appBackupsDirectory else {
-            throw OperationError.missingAppGroup
+            throw OperationError.missingAppGroup(name: Bundle.baseAltStoreAppGroupID)
         }
         
         let installedAppBundleIDs = await DatabaseManager.shared.persistentContainer.performBackgroundTask { context in
@@ -135,8 +138,7 @@ class ClearAppCacheOperation: BaseStandaloneOperation<StandaloneOperationContext
     private func removeBackupDirItems(at url: URL, installedBundleIDs: Set<String>, coordinatorError: Error?) throws {
         if let coordinatorError { throw coordinatorError }
         
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+        guard let resourceValues = try? url.resourceValues(forKeys: [.isDirectoryKey]), resourceValues.isDirectory == true else {
             self.setProgress(90)
             return
         }

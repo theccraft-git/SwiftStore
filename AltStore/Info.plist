@@ -4,16 +4,6 @@
 <dict>
 	<key>ALTAnisetteURL</key>
 	<string>https://ani.sidestore.io</string>
-	<key>ALTAppGroups</key>
-	<array>
-		<string>group.$(APP_GROUP_IDENTIFIER)</string>
-	</array>
-	<key>ALTDeviceID</key>
-	<string>00008120-001270DA119B401E</string>
-	<key>ALTPairingFile</key>
-	<string>&lt;insert pairing file here&gt;</string>
-	<key>ALTServerID</key>
-	<string>1F7D5B55-79CE-4546-A029-D4DDC4AF3B6D</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDocumentTypes</key>
@@ -90,6 +80,7 @@
 	<array>
 		<string>sidestore-com.SideStore.SideStore</string>
 		<string>sidestore-com.SideStore.SideStore.Beta</string>
+		<string>localdevvpn</string>
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
@@ -104,6 +95,7 @@
 	<array>
 		<string>_altserver._tcp</string>
 		<string>_remotepairing-pairable-host._tcp</string>
+		<string>_remotepairing-manual-pairing._tcp</string>
 		<string>_services._dns-sd._udp</string>
 		<string>_airplay._tcp</string>
 		<string>_raop._tcp</string>
@@ -161,6 +153,15 @@
 		<string>_h323._udp</string>
 		<string>_ws._tcp</string>
 		<string>_wss._tcp</string>
+		<string>_remoted._tcp</string>
+		<string>_coredevice._tcp</string>
+		<string>_appletv-v2._tcp</string>
+		<string>_apple-mobdev._tcp</string>
+		<string>_jitstreamer._tcp</string>
+		<string>_matter._tcp</string>
+		<string>_matterc._udp</string>
+		<string>_airprint._tcp</string>
+		<string>_vnc._tcp</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>SideStore can use local network access to discover Bonjour (mDNS) services on your network. This is not required for core functionality.</string>
@@ -230,8 +231,14 @@
 	<array>
 		<string>audio</string>
 		<string>fetch</string>
+		<string>location</string>
 		<string>remote-notification</string>
+		<string>processing</string>
 	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>SideStore uses location updates to keep background operations active.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>SideStore uses location updates to keep background operations active.</string>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
@@ -300,6 +307,7 @@
 				<key>public.filename-extension</key>
 				<array>
 					<string>mobiledevicepairing</string>
+					<string>mobiledevicepair</string>
 				</array>
 			</dict>
 		</dict>
