@@ -4,6 +4,33 @@
   <img src="logo.png" alt="SwiftStore Logo" width="150" height="150">
 </p>
 
+---
+
+> [!NOTE]
+> **Sorry for the delay.**
+>
+> This project is taking longer than expected but it is about to be done. There is an alternative to be used in the meantime:
+> - **SwiftContainer:** https://github.com/theccraft-git/SwiftContainer
+> SwiftContainer is a fork of LiveContainer which adds the ability to create, sign and install iOS and iPadOS apps directly on device!
+>
+> We recommend installing SwiftContainer using one of the two methods:
+>
+> 1. **SwiftInstaller:** https://github.com/theccraft-git/SwiftInstaller
+>
+> - Install SwiftInstaller using the website: https://theccraft-git.github.io/SwiftInstaller/ (OFFICIAL)
+> - All other sources are NOT official downloading tools
+> - In the app, select SwiftStore + SwiftContainer
+> - Select "Nightly". Stable is currently not supported
+>
+> 2. **iloader:** https://github.com/nab138/iloader
+>
+> - Download and install the app: https://iloader.site
+> - Download the SwiftInstaller or SwiftInstaller + SwiftStore IPA: https://github.com/theccraft-git/SwiftContainer/releases/nightly/
+> - Import the IPA and wait for the installation to complete
+>
+> 
+---
+
 > **The All-In-One iOS & iPadOS Creation Studio and Sideloading Hub**
 
 **SwiftStore** is a PC-free tool designed for iPad and iOS users. It bridges Apple’s **Swift Playgrounds** with GitHub Actions cloud compilation, allowing you to build, sign, and install your own custom applications—directly on your device, completely free, and without needing a Mac, Xcode, or a paid Apple Developer account.
